@@ -32,3 +32,22 @@ class LLMClient(ABC):
     def recommend_reroute(self, context: dict[str, Any]) -> str:
         """Turn a ranked list of reroute options into a short recommendation with rationale."""
         raise NotImplementedError
+
+    def parse_flight_request(self, text: str) -> dict[str, Any]:
+        """Extract {origin, destination, depart, adults} from a natural-language request.
+
+        Default implementation delegates to the shared regex/date parser in
+        `adapt.llm.parser`, so every backend has a usable fallback for free.
+        Real LLM backends should override this to use a model pass for higher
+        accuracy, re-falling-back to the regex parser when the model fails.
+        """
+        from adapt.llm.parser import parse_flight_request
+
+        parsed = parse_flight_request(text)
+        return {
+            "origin": parsed.origin,
+            "destination": parsed.destination,
+            "depart": parsed.depart.isoformat() if parsed.depart else None,
+            "adults": parsed.adults,
+            "missing": parsed.missing or [],
+        }

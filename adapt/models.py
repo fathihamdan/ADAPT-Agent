@@ -51,13 +51,14 @@ class Flight:
     destination: str  # airport code
     sched_dep: datetime
     sched_arr: datetime
-    terminal_dep: str
-    terminal_arr: str
+    terminal_dep: str = ""
+    terminal_arr: str = ""
     status: FlightStatus = FlightStatus.ON_TIME
     delay_minutes: int = 0
     cause: DisruptionCause = DisruptionCause.NONE
     raw_ops_note: str = ""  # cryptic airline-ops-style note, source text for the explainer
     gate: str = ""
+    source: str = "mock"  # "mock" or "atlas" — which data source produced this record
 
     @property
     def actual_dep(self) -> datetime:
@@ -111,3 +112,16 @@ class RerouteOption:
     delay_vs_original_minutes: int
     connections: int
     notes: str = ""
+    # Atlas-only metadata. Populated when the option was produced from a live
+    # Atlas search; None when the option came from mock data.
+    atlas_offer_id: str | None = None
+    atlas_search_id: str | None = None
+    atlas_price: float | None = None
+    atlas_currency: str | None = None
+    atlas_price_status: str | None = None  # "reference" | "current"
+    atlas_bookable: bool | None = None
+    atlas_ancillary_supported: list[str] | None = None
+
+    @property
+    def from_atlas(self) -> bool:
+        return self.atlas_offer_id is not None

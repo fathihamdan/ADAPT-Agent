@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from adapt.agents import connection_risk, disruption_explainer, rerouting
+from adapt.agents import connection_risk, disruption_explainer, rebooking, rerouting
 from adapt.data.mock_data import get_airport
 from adapt.llm.base import LLMClient
 from adapt.models import ConnectionRisk, Flight, Itinerary, RerouteOption, RiskLevel
@@ -29,9 +29,16 @@ class AnalysisReport:
     leg_explanations: list[tuple[Flight, str]] = field(default_factory=list)
     connection_risks: list[tuple[ConnectionRisk, str]] = field(default_factory=list)
     reroutes: list[RerouteBundle] = field(default_factory=list)
+    rebooking_plan: dict | None = None
 
 
-def run(itinerary: Itinerary, llm: LLMClient) -> AnalysisReport:
+def run(
+    itinerary: Itinerary,
+    llm: LLMClient,
+    *,
+    use_atlas: bool = False,
+    atlas_env: str = "production",
+) -> AnalysisReport:
     report = AnalysisReport(itinerary=itinerary)
 
     # 1. Explain every disrupted leg.
@@ -56,8 +63,17 @@ def run(itinerary: Itinerary, llm: LLMClient) -> AnalysisReport:
                 reason=reason,
                 llm=llm,
                 exclude_flight_no=inbound.flight_no,
+                use_atlas=use_atlas,
+                atlas_env=atlas_env,
             )
             report.reroutes.append(RerouteBundle(reason, options, narrative))
+            report.rebooking_plan = rebooking.build_rebooking_plan(
+                origin=inbound.origin,
+                destination=final_destination,
+                depart=inbound.sched_dep.strftime("%Y-%m-%d"),
+                adults=1,
+                reason=reason,
+            )
             continue
 
         airport = get_airport(inbound.destination)
@@ -81,7 +97,16 @@ def run(itinerary: Itinerary, llm: LLMClient) -> AnalysisReport:
                 reason=reason,
                 llm=llm,
                 exclude_flight_no=outbound.flight_no,
+                use_atlas=use_atlas,
+                atlas_env=atlas_env,
             )
             report.reroutes.append(RerouteBundle(reason, options, reroute_narrative))
+            report.rebooking_plan = rebooking.build_rebooking_plan(
+                origin=inbound.destination,
+                destination=final_destination,
+                depart=outbound.sched_dep.strftime("%Y-%m-%d"),
+                adults=1,
+                reason=reason,
+            )
 
     return report
