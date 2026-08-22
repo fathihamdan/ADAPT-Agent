@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from rich.console import Console
+from rich.console import Console, Group
+from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -95,7 +96,7 @@ def print_itinerary_table(itineraries: list[Itinerary]) -> None:
 def print_explanation(flight: Flight, explanation: str) -> None:
     style = flight_row_style(flight)
     header = f"[{style}]{flight.flight_no}[/{style}] {flight.origin} -> {flight.destination}  ({flight.status.value})"
-    console.print(Panel(explanation, title=header, border_style=style, title_align="left"))
+    console.print(Panel(Markdown(explanation), title=header, border_style=style, title_align="left"))
 
 
 def print_risk(risk: ConnectionRisk, narrative: str) -> None:
@@ -105,7 +106,8 @@ def print_risk(risk: ConnectionRisk, narrative: str) -> None:
         f"{risk.inbound.flight_no} -> {risk.outbound.flight_no}  "
         f"[{style}]{risk.risk_level.value}[/{style}] ({round(risk.probability_missed * 100)}%)"
     )
-    body = narrative + "\n\n" + "\n".join(f"  - {f}" for f in risk.factors)
+    factors_text = Text("\n".join(f"  - {f}" for f in risk.factors), style="dim")
+    body = Group(Markdown(narrative), Text(""), factors_text)
     console.print(Panel(body, title=header, border_style=style, title_align="left"))
 
 
@@ -129,7 +131,7 @@ def print_reroute(reason: str, options: list[RerouteOption], narrative: str) -> 
                 str(opt.connections),
             )
         console.print(table)
-    console.print(Panel(narrative, border_style="magenta", title="ADAPT Recommendation", title_align="left"))
+    console.print(Panel(Markdown(narrative), border_style="magenta", title="ADAPT Recommendation", title_align="left"))
 
 
 def print_section(title: str) -> None:

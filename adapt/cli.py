@@ -8,6 +8,9 @@ from adapt.agents import connection_risk, disruption_explainer, orchestrator, re
 from adapt.data.mock_data import find_flight, find_itinerary, get_airport, get_flight_db, get_itineraries
 from adapt.llm import get_llm_client
 from adapt.utils import formatting as fmt
+from adapt.utils.env import load_dotenv
+
+load_dotenv()
 
 app = typer.Typer(
     name="adapt",
