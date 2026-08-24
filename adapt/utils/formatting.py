@@ -8,7 +8,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from adapt.models import ConnectionRisk, Flight, Itinerary, RerouteOption, RiskLevel
+from adapt.agents.connections import find_connections
+from adapt.models import ConnectionRisk, Flight, Passenger, RerouteOption, RiskLevel
 
 console = Console()
 
@@ -65,29 +66,28 @@ def print_flight_table(flights: list[Flight], title: str = "Flights") -> None:
     console.print(table)
 
 
-def print_itinerary_table(itineraries: list[Itinerary]) -> None:
-    table = Table(title="Itineraries", header_style="bold cyan")
-    table.add_column("PNR")
-    table.add_column("Passenger")
+def print_passenger_table(passengers: list[Passenger]) -> None:
+    """Only passengers with a detected connection are shown - a single-flight
+    booking has no connection risk for this tool to watch."""
+    table = Table(title="Passengers", header_style="bold cyan")
+    table.add_column("Passenger ID")
+    table.add_column("Name")
     table.add_column("Route")
-    table.add_column("Legs")
+    table.add_column("Flights")
     table.add_column("Status")
 
-    for it in itineraries:
-        route = " -> ".join([it.legs[0].origin] + [leg.destination for leg in it.legs]) if it.legs else "-"
-        worst = "ON_TIME"
-        for leg in it.legs:
-            if leg.status.value == "CANCELLED":
-                worst = "CANCELLED"
-                break
-            if leg.status.value == "DELAYED" and worst != "CANCELLED":
-                worst = "DELAYED"
+    for p in passengers:
+        if not find_connections(p.flights):
+            continue
+        ordered = sorted(p.flights, key=lambda f: f.sched_dep)
+        route = " -> ".join([ordered[0].origin] + [f.destination for f in ordered])
+        worst = p.worst_status.value
         style = _STATUS_STYLE.get(worst, "white")
         table.add_row(
-            it.record_locator,
-            it.passenger_name,
+            p.passenger_id,
+            p.name,
             route,
-            " + ".join(leg.flight_no for leg in it.legs),
+            " + ".join(f.flight_no for f in ordered),
             Text(worst, style=style),
         )
     console.print(table)

@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GateWatch — AI Flight Disruption Assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">✈️</div>
+    <div>
+      <div class="brand-name">GateWatch</div>
+      <div class="brand-sub">AI Disruption Assistant</div>
+    </div>
+  </div>
+
+  <div class="nav-group-label">Workspace</div>
+  <div class="navlink active"><span class="ic">🏠</span> Home</div>
+  <div class="navlink"><span class="ic">💬</span> Disruption Explainer<span class="count">1</span></div>
+  <div class="navlink"><span class="ic">⏱️</span> Connection Risk<span class="count">1</span></div>
+  <div class="navlink"><span class="ic">🔁</span> Reroute Suggestions<span class="count">3</span></div>
+
+  <div class="nav-group-label">Insights</div>
+  <div class="navlink"><span class="ic">🛫</span> Routes</div>
+  <div class="navlink"><span class="ic">📊</span> Analytics</div>
+
+  <div class="sidebar-foot">
+    <div class="status-line"><span class="status-dot"></span> LIVE · MONITORING 1 FLIGHT</div>
+  </div>
+</aside>
+
+<div class="main">
+
+  <div class="topbar">
+    <div>
+      <h1>Flight Disruption Assistant</h1>
+      <div class="subhead">Explain delays, predict connections, suggest reroutes</div>
+    </div>
+    <div class="search-wrap">
+      <span class="sic">🔍</span>
+      <input id="searchInput" type="text" placeholder="Enter flight number or route (e.g. MH2871, KUL → NRT)">
+    </div>
+    <div class="chip-row" id="chipRow"></div>
+    <div class="avatar"></div>
+  </div>
+
+  <div class="content">
+
+    <div class="eyebrow">Feature 01 + 02 · Explain the delay, predict the connection<span class="ln"></span></div>
+
+    <div class="row-1">
+
+      <!-- FEATURE 2: CONNECTION RISK PREDICTOR -->
+      <div class="panel risk-card">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">Connection Risk</div>
+            <div class="panel-desc" id="riskRoute">Layover time vs terminal walk time</div>
+          </div>
+          <span class="feature-tag f2">Feature 2</span>
+        </div>
+
+        <div class="route-chip" id="riskRouteChip"><b>NRT</b> → <b>LAX</b> connection</div>
+
+        <div class="flap-wrap">
+          <span class="flap"><span id="riskPct">0</span><span class="flap-pct">%</span></span>
+          <span class="risk-band mod" id="riskBand">Moderate Risk</span>
+        </div>
+        <div class="risk-caption" id="riskCaption">Only 7 minutes of buffer left after a 1.8&nbsp;km terminal walk.</div>
+
+        <div class="timeline">
+          <div class="timeline-track"><div class="timeline-fill" id="timelineFill"></div></div>
+          <div class="timeline-pts" id="timelinePts"></div>
+        </div>
+
+        <div class="risk-stats">
+          <div class="rstat"><div class="k">Available</div><div class="v" id="statAvailable">– min</div></div>
+          <div class="rstat"><div class="k">Required</div><div class="v" id="statRequired">– min</div></div>
+          <div class="rstat"><div class="k">Buffer left</div><div class="v" id="statBuffer">– min</div></div>
+          <div class="rstat"><div class="k">Next gate</div><div class="v" id="statGate">–</div></div>
+        </div>
+      </div>
+
+      <!-- FEATURE 1: DISRUPTION EXPLAINER -->
+      <div class="panel explain-card">
+        <div class="panel-head">
+          <div>
+            <div class="panel-title">Disruption Explainer</div>
+            <div class="panel-desc">Turns raw ATC / weather codes into plain language</div>
+          </div>
+          <span class="feature-tag f1">Feature 1</span>
+        </div>
+
+        <div class="feed-block">
+          <div class="feed-label">📡 Raw ATC / weather feed</div>
+          <div class="feed-text" id="feedText">ATC GRND STOP — WX/CB ACT SECTOR 4, EDCT REVISED 1445Z</div>
+        </div>
+
+        <div class="ai-block">
+          <div class="ai-label">🤖 GateWatch AI says</div>
+          <div class="ai-text" id="aiText"><b>Thunderstorms nearby</b> are forcing air traffic control to briefly hold takeoffs for safety. You'll now leave at <b>2:45 PM</b>. Nothing to do on your end — we're watching your gate for you.</div>
+        </div>
+
+        <div class="reason-breakdown">
+          <div class="rb-title">Disruption reasons this month</div>
+          <div class="rb-row"><span class="rb-label">Weather</span><div class="rb-track"><div class="rb-fill" id="rb-weather" style="background:var(--sky);"></div></div><span class="rb-val" id="rbv-weather">0%</span></div>
+          <div class="rb-row"><span class="rb-label">ATC / traffic</span><div class="rb-track"><div class="rb-fill" id="rb-atc" style="background:var(--amber);"></div></div><span class="rb-val" id="rbv-atc">0%</span></div>
+          <div class="rb-row"><span class="rb-label">Mechanical</span><div class="rb-track"><div class="rb-fill" id="rb-mech" style="background:var(--red);"></div></div><span class="rb-val" id="rbv-mech">0%</span></div>
+          <div class="rb-row"><span class="rb-label">Crew / other</span><div class="rb-track"><div class="rb-fill" id="rb-other" style="background:#9AA8C4;"></div></div><span class="rb-val" id="rbv-other">0%</span></div>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="eyebrow">Feature 03 · Smart rerouting<span class="ln"></span></div>
+
+    <div class="panel reroute-panel">
+      <div class="map-side">
+        <div class="map-head">
+          <span class="feature-tag">Feature 3</span>
+          <h3>Suggested Reroute</h3>
+          <p id="mapCaption">Live seat availability checked across nearby departures to find the safest path onward.</p>
+        </div>
+        <svg class="route-svg" viewBox="0 0 320 200" id="routeSvg"></svg>
+      </div>
+
+      <div class="list-side">
+        <div class="list-head">
+          <div>
+            <h3>Ranked Alternatives</h3>
+            <p>AI reasoning included for every option</p>
+          </div>
+        </div>
+        <div id="optList"></div>
+        <button class="cta-main" id="confirmBtn">✓ Confirm recommended flight</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+/* ===================== STATE ===================== */
+let itineraries = [];   // [{pnr, passenger_name, label}]
+let current = null;
+
+/* ===================== HELPERS ===================== */
+function bandFor(pct){
+  if(pct < 30) return {cls:"low", label:"Low Risk"};
+  if(pct < 60) return {cls:"mod", label:"Moderate Risk"};
+  return {cls:"high", label:"High Risk"};
+}
+// Reroute options carry a real delay-vs-original (minutes), not a fabricated risk score.
+function styleForDelay(min){ return min <= 0 ? "good" : min <= 180 ? "mid" : "bad"; }
+
+function animateFlap(el, target){
+  let val = 0;
+  const step = () => {
+    val += Math.max(1, Math.round(target/24));
+    if(val >= target) val = target;
+    el.textContent = val;
+    if(val < target) requestAnimationFrame(() => setTimeout(step, 16));
+  };
+  step();
+}
+
+function drawRouteSvg(conn, recommendedCode){
+  const svg = document.getElementById('routeSvg');
+  if(!conn){ svg.innerHTML = ''; return; }
+  svg.innerHTML = `
+    <line x1="20" y1="160" x2="300" y2="40" stroke="#2F80ED" stroke-width="2" stroke-dasharray="5 5" opacity="0.85"/>
+    <line x1="20" y1="160" x2="300" y2="150" stroke="#E14B4B" stroke-width="2" stroke-dasharray="5 5" opacity="0.5"/>
+    <circle cx="20" cy="160" r="6" fill="#F5A429"/>
+    <circle cx="300" cy="40" r="6" fill="#12B886"/>
+    <circle cx="300" cy="150" r="6" fill="#E14B4B"/>
+    <text x="26" y="178" fill="#EAF1FF" font-family="JetBrains Mono" font-size="11" font-weight="700">${conn.from}</text>
+    <text x="262" y="34" fill="#EAF1FF" font-family="JetBrains Mono" font-size="11" font-weight="700">${conn.to}</text>
+    <text x="150" y="30" fill="#8FB8FF" font-family="JetBrains Mono" font-size="9.5">${recommendedCode || ''} · rebooked</text>
+    <text x="150" y="172" fill="#E58C8C" font-family="JetBrains Mono" font-size="9.5">current path · ${conn.risk_pct}% miss risk</text>
+  `;
+}
+
+/* ===================== RENDER ===================== */
+// "Disruption reasons this month" has no real backing data - ADAPT has no
+// persistence layer to aggregate history from, so it's left as a static,
+// clearly-illustrative widget rather than wired to a fabricated number.
+function renderStaticReasonBars(){
+  const demo = {weather:55, atc:20, mech:15, other:10};
+  for(const key of Object.keys(demo)){
+    document.getElementById('rb-' + key).style.width = demo[key] + '%';
+    document.getElementById('rbv-' + key).textContent = demo[key] + '%';
+  }
+}
+
+function renderDisruption(d){
+  const feedText = document.getElementById('feedText');
+  const aiText = document.getElementById('aiText');
+  if(!d){
+    feedText.textContent = 'No disruption on file for this itinerary.';
+    aiText.innerHTML = '<b>Everything looks on schedule.</b> No delay, cancellation, or diversion reported for this itinerary.';
+    return;
+  }
+  feedText.textContent = d.raw_feed;
+  aiText.innerHTML = d.ai_html;
+}
+
+function renderConnection(c){
+  const panel = document.querySelector('.risk-card');
+  if(!c){
+    document.getElementById('riskRouteChip').innerHTML = '<b>No connection</b> on this itinerary';
+    document.getElementById('riskCaption').textContent = 'This itinerary has a single leg, or the connecting leg was cancelled - nothing to assess.';
+    document.getElementById('riskBand').className = 'risk-band low';
+    document.getElementById('riskBand').textContent = 'N/A';
+    document.getElementById('riskPct').textContent = '–';
+    document.getElementById('timelinePts').innerHTML = '';
+    document.getElementById('timelineFill').style.width = '0%';
+    document.getElementById('statAvailable').textContent = '–';
+    document.getElementById('statRequired').textContent = '–';
+    document.getElementById('statBuffer').textContent = '–';
+    document.getElementById('statGate').textContent = '–';
+    panel.style.opacity = '0.6';
+    return;
+  }
+  panel.style.opacity = '1';
+  document.getElementById('riskRouteChip').innerHTML = `<b>${c.from}</b> → <b>${c.to}</b> connection`;
+  document.getElementById('riskCaption').textContent = c.ai_text;
+  const band = bandFor(c.risk_pct);
+  const bandEl = document.getElementById('riskBand');
+  bandEl.className = 'risk-band ' + (c.risk_band_class === 'high' ? 'high' : band.cls);
+  bandEl.textContent = c.risk_level.charAt(0) + c.risk_level.slice(1).toLowerCase() + ' Risk';
+  animateFlap(document.getElementById('riskPct'), c.risk_pct);
+  document.getElementById('statAvailable').textContent = c.available_min + ' min';
+  document.getElementById('statRequired').textContent = c.required_min + ' min';
+  document.getElementById('statBuffer').textContent = c.buffer_min + ' min';
+  document.getElementById('statGate').textContent = c.next_gate;
+
+  const pts = document.getElementById('timelinePts');
+  pts.innerHTML = c.steps.map(s => `<div class="tp ${s[2]}"><div class="dot"></div><small>${s[0]}<br>${s[1]}</small></div>`).join('');
+  const fill = document.getElementById('timelineFill');
+  fill.style.width = '0%';
+  requestAnimationFrame(() => setTimeout(() => { fill.style.width = Math.min(96, c.risk_pct + 10) + '%'; }, 80));
+}
+
+function renderReroute(reroute, connection){
+  const mapCaption = document.getElementById('mapCaption');
+  const list = document.getElementById('optList');
+  const btn = document.getElementById('confirmBtn');
+
+  if(!reroute){
+    mapCaption.textContent = 'No rerouting needed - this itinerary is on track.';
+    list.innerHTML = '<div class="opt-reason" style="padding:8px 0;">Nothing to rebook right now.</div>';
+    btn.style.display = 'none';
+    drawRouteSvg(null);
+    return;
+  }
+  btn.style.display = '';
+  mapCaption.textContent = reroute.reason;
+  list.innerHTML = reroute.options.map(o => `
+    <div class="opt ${o.recommended ? 'rec' : ''}">
+      <div class="opt-light ${styleForDelay(o.delay_vs_original)}"></div>
+      <div class="opt-body">
+        <div class="opt-top">
+          <span class="opt-code">${o.code}</span>
+          ${o.recommended ? '<span class="opt-badge">Recommended</span>' : ''}
+        </div>
+        <div class="opt-route">${o.route} · Departs ${o.depart} · Arrives ${o.arrival}</div>
+        <div class="opt-reason">${o.connections} connection(s) · ${o.delay_vs_original >= 0 ? '+' : ''}${o.delay_vs_original} min vs. original plan</div>
+      </div>
+      <div class="opt-right">
+        <div class="opt-risk ${styleForDelay(o.delay_vs_original)}">${o.delay_vs_original >= 0 ? '+' : ''}${o.delay_vs_original}m</div>
+        <div class="opt-risklabel">vs plan</div>
+      </div>
+    </div>
+  `).join('');
+  const recommended = reroute.options.find(o => o.recommended);
+  drawRouteSvg(connection, recommended ? recommended.code : null);
+}
+
+function render(data){
+  document.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.dataset.pnr === data.pnr));
+  renderDisruption(data.disruption);
+  renderConnection(data.connection);
+  renderReroute(data.reroute, data.connection);
+}
+
+/* ===================== DATA LOADING ===================== */
+async function loadItinerary(pnr){
+  const res = await fetch(`/api/itineraries/${pnr}`);
+  if(!res.ok) return;
+  const data = await res.json();
+  current = pnr;
+  render(data);
+}
+
+function buildChipRow(){
+  const row = document.getElementById('chipRow');
+  row.innerHTML = itineraries.map(it => `<div class="chip" data-pnr="${it.pnr}">${it.label}</div>`).join('');
+}
+
+/* ===================== EVENTS ===================== */
+document.getElementById('chipRow').addEventListener('click', (e) => {
+  const chip = e.target.closest('.chip');
+  if(chip) loadItinerary(chip.dataset.pnr);
+});
+
+document.querySelectorAll('.navlink').forEach(nl => {
+  nl.addEventListener('click', () => {
+    document.querySelectorAll('.navlink').forEach(x => x.classList.remove('active'));
+    nl.classList.add('active');
+  });
+});
+
+const searchInput = document.getElementById('searchInput');
+searchInput.addEventListener('keydown', (e) => {
+  if(e.key !== 'Enter') return;
+  const q = searchInput.value.trim().toLowerCase();
+  const match = itineraries.find(it =>
+    it.pnr.toLowerCase() === q || it.label.toLowerCase().includes(q)
+  );
+  if(match){ loadItinerary(match.pnr); searchInput.value = ''; }
+  else{
+    searchInput.style.borderColor = 'var(--red)';
+    setTimeout(() => searchInput.style.borderColor = '', 700);
+  }
+});
+
+document.getElementById('confirmBtn').addEventListener('click', () => {
+  const btn = document.getElementById('confirmBtn');
+  btn.textContent = '✓ Flight confirmed';
+  btn.style.background = 'linear-gradient(135deg,#0E9D77,#0B7A5C)';
+});
+
+/* ===================== INIT ===================== */
+(async function init(){
+  renderStaticReasonBars();
+  const res = await fetch('/api/itineraries');
+  itineraries = await res.json();
+  buildChipRow();
+  if(itineraries.length) loadItinerary(itineraries[0].pnr);
+})();
+</script>
+
+</body>
+</html>

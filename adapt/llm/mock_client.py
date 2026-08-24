@@ -19,6 +19,8 @@ _GLOSSARY = {
     "GS PGM": "a ground stop program",
     "LLWS": "low-level wind shear",
     "THUNDERSTORM CELLS": "thunderstorms",
+    "LOW VIS": "low visibility conditions",
+    "DIV K": "a diversion to a different airport",
     "EDCT": "a new FAA-assigned departure time",
     "RWY CLSD": "the runway being closed",
     "MX AOG": "a mechanical issue grounding the aircraft",
@@ -42,20 +44,27 @@ _CAUSE_PLAIN = {
     "SECURITY": "a security matter",
     "LATE_INBOUND_AIRCRAFT": "the incoming aircraft arriving late",
     "NONE": "no disruption",
+    "UNKNOWN": "a reason not reported in the tracking data",
 }
 
 
-def _plain_from_ops_note(raw_note: str) -> str:
-    hits: list[str] = []
+def _primary_detail(raw_note: str) -> str:
+    """Single most relevant plain-English phrase for this ops note, not every match.
+
+    Piling on every glossary hit produced a run-on comma list; one well-chosen phrase
+    reads far cleaner and is enough to make the raw note feel decoded.
+    """
     for code, meaning in _GLOSSARY.items():
         if code in raw_note:
-            hits.append(meaning)
-    if not hits:
-        return ""
-    # De-dupe while preserving order.
-    seen: set[str] = set()
-    ordered = [h for h in hits if not (h in seen or seen.add(h))]
-    return ", ".join(ordered)
+            return meaning
+    return ""
+
+
+_ACTION_CANCELLED = "The airline will rebook the passenger automatically — no action needed from the desk yet."
+_ACTION_LONG_DELAY = "That's significant — worth checking the passenger's connection risk if they have one."
+_ACTION_SHORT_DELAY = "No action needed — just a short wait."
+_ACTION_ON_TIME = "Nothing to do here."
+_ACTION_DIVERTED = "The airline will get the passenger to their original destination once conditions allow."
 
 
 class MockLLMClient(LLMClient):
@@ -64,6 +73,12 @@ class MockLLMClient(LLMClient):
         return "offline/rule-based (no API key set)"
 
     def explain_disruption(self, context: dict[str, Any]) -> str:
+        """Always the same two-part shape: headline (what + why), then one action line.
+
+        Keeping the structure fixed makes every explanation scannable at a glance,
+        rather than varying in length and shape depending on how much jargon a given
+        ops note happened to contain.
+        """
         flight_no = context["flight_no"]
         origin = context["origin"]
         destination = context["destination"]
@@ -73,30 +88,25 @@ class MockLLMClient(LLMClient):
         raw_note = context.get("raw_ops_note", "")
 
         cause_plain = _CAUSE_PLAIN.get(cause, cause.lower())
-        detail = _plain_from_ops_note(raw_note)
+        detail = _primary_detail(raw_note)
 
         if status == "CANCELLED":
-            base = (
-                f"Flight {flight_no} ({origin} to {destination}) has been cancelled due to "
-                f"{cause_plain}."
-            )
+            headline = f"Flight {flight_no} ({origin} → {destination}) was cancelled because of {cause_plain}."
+            action = _ACTION_CANCELLED
         elif status == "DELAYED":
-            base = (
-                f"Flight {flight_no} ({origin} to {destination}) is delayed about "
-                f"{delay_minutes} minutes because of {cause_plain}."
-            )
+            headline = f"Flight {flight_no} ({origin} → {destination}) is delayed {delay_minutes} min because of {cause_plain}."
+            action = _ACTION_LONG_DELAY if delay_minutes >= 60 else _ACTION_SHORT_DELAY
+        elif status == "DIVERTED":
+            headline = f"Flight {flight_no} ({origin} → {destination}) was diverted to a different airport because of {cause_plain}."
+            action = _ACTION_DIVERTED
         else:
-            base = f"Flight {flight_no} ({origin} to {destination}) is currently on time."
+            headline = f"Flight {flight_no} ({origin} → {destination}) is on time."
+            action = _ACTION_ON_TIME
 
         if detail:
-            base += f" In plain terms: this involves {detail}."
+            headline += f" In short, {detail}."
 
-        if status == "CANCELLED":
-            base += " The airline will need to rebook you on a different flight."
-        elif status == "DELAYED" and delay_minutes >= 60:
-            base += " This is a significant delay — if you have a connection, it's worth checking your risk of missing it."
-
-        return base
+        return f"{headline} {action}"
 
     def describe_risk(self, context: dict[str, Any]) -> str:
         available = context["available_minutes"]
@@ -109,39 +119,37 @@ class MockLLMClient(LLMClient):
         pct = round(probability * 100)
         margin = round(available - required)
 
-        terminal_note = (
-            "you're staying in the same terminal" if same_terminal else "you'll need to change terminals"
-        )
+        terminal_note = "no terminal change" if same_terminal else "a terminal change"
 
         if level == "CRITICAL":
             verdict = (
-                f"You are very likely to miss your connection at {airport} — "
-                f"there's only {round(available)} minutes between landing and your next departure, "
-                f"but you realistically need about {round(required)} ({terminal_note})."
+                f"The passenger is very likely to miss their connection at {airport} — "
+                f"there's only {round(available)} minutes between landing and their next departure, "
+                f"but they realistically need about {round(required)} ({terminal_note})."
             )
         elif level == "HIGH":
             verdict = (
-                f"Your connection at {airport} is at high risk. You'll have roughly "
+                f"The passenger's connection at {airport} is at high risk. They'll have roughly "
                 f"{round(available)} minutes on the ground against a {round(required)}-minute "
                 f"requirement ({terminal_note}) — a margin of only {margin} minutes."
             )
         elif level == "MEDIUM":
             verdict = (
-                f"Your connection at {airport} is workable but tight — about {margin} minutes of "
-                f"buffer after accounting for {terminal_note}. Head straight to your next gate."
+                f"The passenger's connection at {airport} is workable but tight — about {margin} minutes "
+                f"of buffer after accounting for {terminal_note}. Worth a proactive check-in."
             )
         else:
             verdict = (
-                f"Your connection at {airport} looks comfortable, with about {margin} minutes of "
-                f"buffer beyond what you need ({terminal_note})."
+                f"The passenger's connection at {airport} looks comfortable, with about {margin} minutes "
+                f"of buffer beyond what they need ({terminal_note})."
             )
 
         return f"{verdict} Estimated probability of missing this connection: {pct}%."
 
     def recommend_reroute(self, context: dict[str, Any]) -> str:
         options = context.get("options", [])
-        destination = context.get("destination", "your destination")
-        reason = context.get("reason", "your original connection is at risk")
+        destination = context.get("destination", "the passenger's destination")
+        reason = context.get("reason", "the passenger's original connection is at risk")
 
         if not options:
             return (

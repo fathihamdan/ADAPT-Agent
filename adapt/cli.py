@@ -5,7 +5,9 @@ from __future__ import annotations
 import typer
 
 from adapt.agents import connection_risk, disruption_explainer, orchestrator, rerouting
-from adapt.data.mock_data import find_flight, find_itinerary, get_airport, get_flight_db, get_itineraries
+from adapt.agents.connections import find_connections
+from adapt.data import atlas_source, aviationstack_source
+from adapt.data.mock_data import find_flight, find_passenger, get_airport, get_flight_db, get_passengers
 from adapt.llm import get_llm_client
 from adapt.utils import formatting as fmt
 from adapt.utils.env import load_dotenv
@@ -31,6 +33,16 @@ def status() -> None:
         else "Using a live model backend."
     )
 
+    reroute_source = "Atlas Flight Booking CLI (live search)" if atlas_source.is_available() else "mock schedule only"
+    fmt.console.print(f"Rerouting data source: [bold]{reroute_source}[/bold]")
+    if not atlas_source.is_available():
+        fmt.console.print("Install the atlas-flight CLI to search real alternative flights for rerouting.")
+
+    live_status = "AviationStack (real flight status)" if aviationstack_source.is_available() else "not configured"
+    fmt.console.print(f"Live flight tracking: [bold]{live_status}[/bold]")
+    if not aviationstack_source.is_available():
+        fmt.console.print("Set AVIATIONSTACK_API_KEY to look up real flights with `adapt track`.")
+
 
 @app.command()
 def flights() -> None:
@@ -39,9 +51,9 @@ def flights() -> None:
 
 
 @app.command()
-def itineraries() -> None:
-    """List all sample passenger itineraries (PNRs)."""
-    fmt.print_itinerary_table(list(get_itineraries().values()))
+def passengers() -> None:
+    """List all sample passengers with a detected self-connect booking."""
+    fmt.print_passenger_table(list(get_passengers().values()))
 
 
 @app.command()
@@ -58,22 +70,43 @@ def explain(flight_no: str = typer.Argument(..., help="Flight number, e.g. AD140
 
 
 @app.command()
-def risk(record_locator: str = typer.Argument(..., help="Itinerary PNR, e.g. ADPT01")) -> None:
-    """Connection Risk Predictor: probability of missing each connection in an itinerary."""
-    itinerary = find_itinerary(record_locator)
-    if itinerary is None:
-        fmt.console.print(f"[red]No itinerary found with PNR '{record_locator}'.[/red]")
+def track(flight_iata: str = typer.Argument(..., help="Real IATA flight number, e.g. AA100, BA249")) -> None:
+    """Disruption Explainer for a real flight, using live AviationStack data."""
+    if not aviationstack_source.is_available():
+        fmt.console.print("[red]AVIATIONSTACK_API_KEY is not set — nothing to track against.[/red]")
         raise typer.Exit(code=1)
-    if not itinerary.has_connections:
-        fmt.console.print(f"[yellow]{record_locator} has a single leg — no connections to assess.[/yellow]")
+
+    flight = aviationstack_source.lookup_flight(flight_iata)
+    if flight is None:
+        fmt.console.print(f"[red]No live data found for flight '{flight_iata}'.[/red]")
+        raise typer.Exit(code=1)
+
+    llm = get_llm_client()
+    explanation = disruption_explainer.explain(flight, llm)
+    fmt.print_explanation(flight, explanation)
+
+
+@app.command()
+def risk(passenger_id: str = typer.Argument(..., help="Passenger ID, e.g. PSG1001")) -> None:
+    """Connection Risk Predictor: probability of missing each detected connection."""
+    passenger = find_passenger(passenger_id)
+    if passenger is None:
+        fmt.console.print(f"[red]No passenger found with ID '{passenger_id}'.[/red]")
+        raise typer.Exit(code=1)
+    pairs = find_connections(passenger.flights)
+    if not pairs:
+        fmt.console.print(f"[yellow]{passenger_id} has no detected connection to assess.[/yellow]")
         return
 
     llm = get_llm_client()
-    for inbound, outbound in zip(itinerary.legs, itinerary.legs[1:]):
+    for inbound, outbound in pairs:
+        if inbound.status.value == "CANCELLED":
+            fmt.console.print(f"[yellow]{inbound.flight_no} was cancelled — no risk to compute, see `adapt analyze`.[/yellow]")
+            continue
         airport = get_airport(inbound.destination)
         if airport is None:
             continue
-        assessment = connection_risk.assess(itinerary, inbound, outbound, airport, llm)
+        assessment = connection_risk.assess(passenger.passenger_id, inbound, outbound, airport, llm)
         narrative = connection_risk.describe(assessment, llm)
         fmt.print_risk(assessment, narrative)
 
@@ -98,19 +131,19 @@ def reroute(
 
 
 @app.command()
-def analyze(record_locator: str = typer.Argument(..., help="Itinerary PNR, e.g. ADPT01 or ADPT02")) -> None:
-    """Run the full ADAPT agent end-to-end on an itinerary: explain, assess risk, reroute."""
-    itinerary = find_itinerary(record_locator)
-    if itinerary is None:
-        fmt.console.print(f"[red]No itinerary found with PNR '{record_locator}'.[/red]")
+def analyze(passenger_id: str = typer.Argument(..., help="Passenger ID, e.g. PSG1001 or PSG1002")) -> None:
+    """Run the full ADAPT agent end-to-end for a passenger: explain, assess risk, reroute."""
+    passenger = find_passenger(passenger_id)
+    if passenger is None:
+        fmt.console.print(f"[red]No passenger found with ID '{passenger_id}'.[/red]")
         raise typer.Exit(code=1)
 
     fmt.print_banner()
-    fmt.console.print(f"[bold]Itinerary {itinerary.record_locator}[/bold] — {itinerary.passenger_name}")
-    fmt.print_flight_table(itinerary.legs, title="Booked Legs")
+    fmt.console.print(f"[bold]Passenger {passenger.passenger_id}[/bold] — {passenger.name}")
+    fmt.print_flight_table(sorted(passenger.flights, key=lambda f: f.sched_dep), title="Booked Flights")
 
     llm = get_llm_client()
-    report = orchestrator.run(itinerary, llm)
+    report = orchestrator.run(passenger, llm)
 
     if report.leg_explanations:
         fmt.print_section("Disruption Explainer")

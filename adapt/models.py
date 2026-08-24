@@ -22,6 +22,9 @@ class DisruptionCause(str, Enum):
     SECURITY = "SECURITY"
     LATE_INBOUND_AIRCRAFT = "LATE_INBOUND_AIRCRAFT"
     NONE = "NONE"
+    # Real tracking data (e.g. AviationStack) reports that a flight *is* disrupted
+    # without saying why - distinct from NONE, which means no disruption at all.
+    UNKNOWN = "UNKNOWN"
 
 
 class RiskLevel(str, Enum):
@@ -77,23 +80,38 @@ class Flight:
 
 
 @dataclass
-class Itinerary:
-    record_locator: str  # PNR
-    passenger_name: str
-    legs: list[Flight] = field(default_factory=list)
+class Passenger:
+    """A dealer's customer and everything they've booked - not an airline PNR.
+
+    `flights` is flat and not required to be pre-ordered or pre-paired: a
+    passenger books flight A on one airline and flight B on a different one as
+    a self-connect trip, and *whether* two of their flights actually connect is
+    something adapt.agents.connections.find_connections() detects, not
+    something declared here.
+    """
+
+    passenger_id: str  # dealer-issued, e.g. "PSG1001"
+    name: str
+    flights: list[Flight] = field(default_factory=list)
 
     @property
-    def final_destination(self) -> str:
-        return self.legs[-1].destination if self.legs else ""
+    def worst_status(self) -> FlightStatus:
+        """The single status that best summarizes this passenger's flights, worst first.
 
-    @property
-    def has_connections(self) -> bool:
-        return len(self.legs) > 1
+        A shared source of truth for "how disrupted is this passenger overall" -
+        CLI and web formatting both need it, and duplicating the priority ordering
+        in each place is exactly how DIVERTED once silently fell through to ON_TIME.
+        """
+        priority = [FlightStatus.CANCELLED, FlightStatus.DIVERTED, FlightStatus.DELAYED]
+        for status in priority:
+            if any(f.status == status for f in self.flights):
+                return status
+        return FlightStatus.ON_TIME
 
 
 @dataclass
 class ConnectionRisk:
-    itinerary: Itinerary
+    passenger_id: str
     inbound: Flight
     outbound: Flight
     connection_airport: Airport

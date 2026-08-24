@@ -1,0 +1,10 @@
+{
+  "description": "This app simplifies flight disruption communication, predicts connection risks, and offers safe rebooking options, ensuring a stress-free travel experience.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}

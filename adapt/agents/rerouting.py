@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from adapt.data import atlas_source
 from adapt.data.mock_data import get_flight_db
 from adapt.llm.base import LLMClient
 from adapt.models import Flight, RerouteOption
@@ -17,6 +18,35 @@ def _legs_summary(legs: list[Flight]) -> str:
     return " + ".join(f.flight_no for f in legs)
 
 
+def _find_options_via_atlas(
+    origin: str,
+    destination: str,
+    not_before: datetime,
+    original_arrival: datetime,
+    max_options: int,
+) -> list[RerouteOption]:
+    offers = atlas_source.search(origin, destination, not_before.strftime("%Y-%m-%d"))
+
+    options: list[RerouteOption] = []
+    for legs in offers:
+        if legs[0].sched_dep < not_before:
+            continue
+        new_arrival = legs[-1].sched_arr
+        delay_vs_original = round((new_arrival - original_arrival).total_seconds() / 60)
+        options.append(
+            RerouteOption(
+                replacement_legs=legs,
+                new_arrival=new_arrival,
+                delay_vs_original_minutes=delay_vs_original,
+                connections=len(legs) - 1,
+                notes="live Atlas search",
+            )
+        )
+
+    options.sort(key=lambda o: (o.new_arrival, o.connections))
+    return options[:max_options]
+
+
 def find_options(
     origin: str,
     destination: str,
@@ -25,6 +55,10 @@ def find_options(
     exclude_flight_no: str | None = None,
     max_options: int = 3,
 ) -> list[RerouteOption]:
+    atlas_options = _find_options_via_atlas(origin, destination, not_before, original_arrival, max_options)
+    if atlas_options:
+        return atlas_options
+
     db = [f for f in get_flight_db() if f.status.value != "CANCELLED"]
     if exclude_flight_no:
         db = [f for f in db if f.flight_no != exclude_flight_no]

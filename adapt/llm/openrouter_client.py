@@ -14,28 +14,24 @@ import urllib.request
 from typing import Any
 
 from adapt.llm.base import LLMClient
+from adapt.llm.prompts import EXPLAINER_SYSTEM, REROUTE_SYSTEM, RISK_SYSTEM
 
 _API_URL = "https://openrouter.ai/api/v1/chat/completions"
 _DEFAULT_MODEL = os.environ.get("ADAPT_MODEL", "anthropic/claude-sonnet-4.5")
 
-_EXPLAINER_SYSTEM = (
-    "You are ADAPT, an airline disruption assistant. Translate cryptic airline "
-    "operations notes and disruption codes into a short, clear, reassuring explanation "
-    "a traveler can understand in a few seconds. 2-4 sentences. No airline jargon."
-)
 
-_RISK_SYSTEM = (
-    "You are ADAPT, an airline connection-risk assistant. Given a computed connection "
-    "risk assessment (already-calculated numbers, do not recompute them), explain the "
-    "situation to the traveler in 2-3 plain-English sentences and end with the stated "
-    "probability of missing the connection."
-)
+def _extract_error_message(raw_body: str) -> str:
+    """Pull the human-readable message out of OpenRouter's error JSON.
 
-_REROUTE_SYSTEM = (
-    "You are ADAPT, an airline rerouting assistant. Given a ranked list of alternative "
-    "flight options (already ranked, do not re-rank), recommend the best one to the "
-    "traveler and briefly justify why, then list the other options as backups. Be concise."
-)
+    OpenRouter error bodies are a deeply nested object (error.message, plus a
+    metadata blob with duplicate previous_errors). Surfacing the whole thing to a
+    traveler-facing error is unreadable, so just take the one line that matters.
+    """
+    try:
+        parsed = json.loads(raw_body)
+        return str(parsed["error"]["message"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return raw_body[:200]
 
 
 class OpenRouterClient(LLMClient):
@@ -50,10 +46,15 @@ class OpenRouterClient(LLMClient):
         return f"OpenRouter ({self._model})"
 
     def _generate(self, system: str, prompt: str) -> str:
+        # 1500 gives headroom for reasoning models (e.g. the free nvidia/nemotron-nano
+        # tier) whose hidden chain-of-thought eats into the budget before any visible
+        # output - observed anywhere from ~250 to ~380 reasoning tokens for the same
+        # prompt across repeated calls. A tighter cap risks truncating the actual
+        # answer (finish_reason=length, content=None).
         body = json.dumps(
             {
                 "model": self._model,
-                "max_tokens": 400,
+                "max_tokens": 1500,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt},
@@ -76,10 +77,23 @@ class OpenRouterClient(LLMClient):
             with urllib.request.urlopen(request, timeout=30) as response:
                 payload: dict[str, Any] = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"OpenRouter request failed ({exc.code}): {detail}") from exc
+            raw = exc.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"OpenRouter request failed: {_extract_error_message(raw)}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Could not reach OpenRouter: {exc}") from exc
 
-        return payload["choices"][0]["message"]["content"].strip()
+        choice = payload["choices"][0]
+        content = choice["message"].get("content")
+        if not content:
+            # Reasoning models can exhaust the token budget on hidden chain-of-thought
+            # before emitting any visible output, leaving content empty/None even
+            # though the request itself succeeded.
+            raise RuntimeError(
+                f"{self._model} returned no usable content (finish_reason="
+                f"{choice.get('finish_reason')!r}) - it may have used its entire "
+                "token budget on internal reasoning. Try again, or switch models."
+            )
+        return content.strip()
 
     def explain_disruption(self, context: dict[str, Any]) -> str:
         prompt = (
@@ -90,7 +104,7 @@ class OpenRouterClient(LLMClient):
             f"Raw ops note: {context.get('raw_ops_note', '(none)')}\n\n"
             "Explain this disruption to the traveler."
         )
-        return self._generate(_EXPLAINER_SYSTEM, prompt)
+        return self._generate(EXPLAINER_SYSTEM, prompt)
 
     def describe_risk(self, context: dict[str, Any]) -> str:
         prompt = (
@@ -102,7 +116,7 @@ class OpenRouterClient(LLMClient):
             f"Computed probability of missing connection: {round(context['probability_missed'] * 100)}%\n\n"
             "Summarize this risk assessment for the traveler."
         )
-        return self._generate(_RISK_SYSTEM, prompt)
+        return self._generate(RISK_SYSTEM, prompt)
 
     def recommend_reroute(self, context: dict[str, Any]) -> str:
         options = context.get("options", [])
@@ -117,4 +131,4 @@ class OpenRouterClient(LLMClient):
             f"Ranked alternative options:\n{options_text}\n\n"
             "Recommend the best option and briefly justify it."
         )
-        return self._generate(_REROUTE_SYSTEM, prompt)
+        return self._generate(REROUTE_SYSTEM, prompt)

@@ -7,7 +7,7 @@ from __future__ import annotations
 import math
 
 from adapt.llm.base import LLMClient
-from adapt.models import Airport, ConnectionRisk, Flight, Itinerary, RiskLevel
+from adapt.models import Airport, ConnectionRisk, Flight, RiskLevel
 
 # Minutes needed to deplane, clear the jet bridge, and start moving toward the next gate.
 DEPLANE_BUFFER_MINUTES = 15
@@ -46,7 +46,7 @@ def _risk_level(probability: float) -> RiskLevel:
 
 
 def assess(
-    itinerary: Itinerary,
+    passenger_id: str,
     inbound: Flight,
     outbound: Flight,
     connection_airport: Airport,
@@ -67,7 +67,7 @@ def assess(
     ]
 
     risk = ConnectionRisk(
-        itinerary=itinerary,
+        passenger_id=passenger_id,
         inbound=inbound,
         outbound=outbound,
         connection_airport=connection_airport,

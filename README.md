@@ -2,24 +2,23 @@
 ## Airline Disruption Analysis &amp; Prevention Technology  
 An Agentic AI-Powered system 
 
-Flight delays, cancellations, and missed connections are a traveler's worst nightmare. The ADAPT Agent (Airline Disruption Analysis & Prevention Technology) is an innovative agentic AI solution designed to transform this stressful experience into a seamless, autonomous journey. ADAPT empowers passengers by providing intelligent insights and proactive solutions, ensuring you stay ahead of disruptions and reach your destination with minimal hassle.
+Self-connect trips — flight A on one airline, flight B on a different one, sold as a single journey by a 3rd-party ticket dealer — are a liability nobody but the dealer is watching. Neither airline protects that connection if flight A runs late; they don't even know the other flight exists. ADAPT-Agent (Airline Disruption Analysis & Prevention Technology) is an agentic AI tool for that dealer's **ops desk**: it watches every customer's self-connect booking, explains what's going wrong in plain English, predicts the real probability of a missed connection, and finds a rerouting option before the customer ever reaches the gate.
 
-
-## How ADAPT Revolutionizes Your Travel Experience:
+## How ADAPT Revolutionizes Disruption Ops:
 ADAPT offers an end-to-end autonomous disruption management experience through its intelligent features and automated actions:
 
-**- Disruption Explainer:** No more deciphering cryptic airline announcements. ADAPT translates complex technical information regarding delays, cancellations, weather events, and Air Traffic Control (ATC) issues into clear, easy-to-understand explanations. Know exactly what's happening and why.  
+**- Disruption Explainer:** No more deciphering cryptic airline announcements. ADAPT translates complex technical information regarding delays, cancellations, weather events, and Air Traffic Control (ATC) issues into clear, easy-to-understand explanations for the ops desk. Know exactly what's happening and why, for every passenger in the queue.
 
-**- Connection Risk Predictor:** Traveling with connections? ADAPT calculates the precise probability of you missing your connecting flight. It intelligently analyzes critical factors such as your layover duration, terminal distances, and estimated walking times, providing you with real-time risk assessments.  
+**- Connection Risk Predictor:** For every passenger who self-connected two separately-ticketed flights, ADAPT detects the real connection and calculates the precise probability of missing it. It intelligently analyzes critical factors such as layover duration, terminal distances, and estimated walking times, providing real-time risk assessments — sorted worst-first.
 
-**- Rerouting Connection:** When disruptions strike, ADAPT acts swiftly. Our system proactively identifies and recommends optimal alternative flights and routes, presenting you with the best options to mitigate delays and avoid missed connections.
+**- Rerouting Connection:** When disruptions strike, ADAPT acts swiftly. Our system proactively identifies and recommends optimal alternative flights and routes, presenting the ops desk with the best options to protect the customer's trip.
 
 ## CLI Prototype
 
-This repo currently ships the CLI-first prototype (a web UI will follow once the
-design is ready). It runs fully offline out of the box (rule-based explanations,
-no API key needed) and drops in real Claude-generated explanations the moment
-you set `ANTHROPIC_API_KEY`.
+This repo currently ships the CLI-first prototype (a web UI follows the same data,
+in `Flight Disruption Assistant (UI)/`). It runs fully offline out of the box
+(rule-based explanations, no API key needed) and drops in real Claude-generated
+explanations the moment you set `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY`.
 
 ### Setup
 
@@ -36,33 +35,43 @@ pip install -e ".[anthropic]"
 export ANTHROPIC_API_KEY=sk-ant-...   # PowerShell: $env:ANTHROPIC_API_KEY = "sk-ant-..."
 ```
 
+(Or set `OPENROUTER_API_KEY` to route through OpenRouter instead — see `adapt/llm/openrouter_client.py`.)
+
 ### Usage
 
 ```
-adapt status                    # which LLM backend is active
+adapt status                    # which backends are active (LLM, rerouting, live tracking)
 adapt flights                   # list the mock flight schedule
-adapt itineraries                # list sample passenger itineraries (PNRs)
+adapt passengers                # list passengers with a detected self-connect booking
 
-adapt explain AD1402             # Disruption Explainer for one flight
-adapt risk ADPT01                # Connection Risk Predictor for an itinerary
+adapt explain NA1402             # Disruption Explainer for one flight
+adapt track AA100                # Disruption Explainer for any real flight, via AviationStack
+adapt risk PSG1001                # Connection Risk Predictor for a passenger
 adapt reroute ORD LAX            # Rerouting Recommender, ad-hoc search
 
-adapt analyze ADPT01             # full agent: explain + risk + reroute, end-to-end
+adapt analyze PSG1001            # full agent: explain + risk + reroute, end-to-end
 ```
 
-Sample itineraries to try with `analyze`:
-- `ADPT01` — John Carter: weather delay eats a tight ORD connection (critical risk → reroute)
-- `ADPT02` — Maria Gomez: DFW–ATL leg cancelled for mechanical reasons → reroute to keep the LHR connection
-- `ADPT03` — Sam Lee: single-leg ATC delay, no connection to assess
+Sample passengers to try with `analyze` — every one books flight A and flight B on
+**different** fictional airlines, the way a self-connect dealer actually sells them:
+
+- `PSG1001` — John Carter: Northbridge Air → Kansai Wing, weather delay eats a tight NRT connection (critical risk → reroute, using a real Atlas-covered route so the Rerouting Recommender pulls live alternatives)
+- `PSG1002` — Maria Gomez: Northbridge Air → Skyline Connect, first leg cancelled (mechanical) → reroute to keep the LHR connection; the cancelled leg is swapped live for a real currently-disrupted flight from AviationStack when configured
+- `PSG1003` — Sam Lee: Northbridge Air → Skyline Connect, a comfortable-but-real MEDIUM-risk connection — the queue isn't only crises
+
+Passengers with only one flight aren't modeled at all: there's no connection for
+this tool to watch, so there's nothing to show.
 
 ### Architecture
 
-- `adapt/models.py` — domain types (Flight, Itinerary, ConnectionRisk, RerouteOption)
-- `adapt/data/mock_data.py` — mock flight schedule & itineraries (swap for a real flight-data API later)
-- `adapt/llm/` — pluggable LLM backend: `MockLLMClient` (offline, default) or `AnthropicClient` (when `ANTHROPIC_API_KEY` is set); both implement the same `LLMClient` interface
-- `adapt/agents/` — the three features (`disruption_explainer`, `connection_risk`, `rerouting`) plus `orchestrator.py`, which is the agentic layer: given an itinerary, it decides autonomously which of the three to run and in what order
+- `adapt/models.py` — domain types (`Flight`, `Passenger`, `ConnectionRisk`, `RerouteOption`). A `Passenger` owns a flat list of booked flights — not pre-paired, not pre-ordered, and not tied to one airline's PNR
+- `adapt/agents/connections.py` — `find_connections()`: detects which of a passenger's flights actually connect (same airport, chronologically valid), so nothing has to pre-declare a pairing
+- `adapt/data/mock_data.py` — mock flight schedule & self-connect passengers (swap for a real flight-data / booking-dealer API later)
+- `adapt/llm/` — pluggable LLM backend: `MockLLMClient` (offline, default), `AnthropicClient`, or `OpenRouterClient`; all three implement the same `LLMClient` interface and speak in ops-desk phrasing ("the passenger", not "you")
+- `adapt/agents/` — the three features (`disruption_explainer`, `connection_risk`, `rerouting`) plus `orchestrator.py`, the agentic layer: given a passenger, it detects connections and decides autonomously which of the three to run and in what order
 - `adapt/cli.py` — Typer CLI wiring it all together
 - `adapt/utils/formatting.py` — Rich-based terminal output
+- `web/` — FastAPI backend serving the same agents as a JSON API (`/api/queue` for the triage list, `/api/queue/{passenger_id}` for detail) plus the built React ops dashboard
 
 ### Notes on the risk model
 
@@ -70,5 +79,5 @@ Connection risk is computed deterministically (not by the LLM) from: inbound
 delay, scheduled layover, whether a terminal change is required, and an
 estimated walking time — the LLM only narrates the result. This keeps risk
 scoring reproducible and auditable; swap `adapt/agents/connection_risk.py`'s
-formula for a real predictive model later without touching the CLI or the
-orchestrator.
+formula for a real predictive model later without touching the CLI, the API,
+or the orchestrator.
