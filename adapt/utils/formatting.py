@@ -8,8 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from adapt.agents.connections import find_connections
-from adapt.models import ConnectionRisk, Flight, Passenger, RerouteOption, RiskLevel
+from adapt.models import BookingResult, BookingStage, ConnectionRisk, Flight, Itinerary, RerouteOption, RiskLevel
 
 console = Console()
 
@@ -221,6 +220,118 @@ def print_atlas_offers(
         )
     elif any(o.is_reference_only for o in offers):
         console.print(
-            "[yellow]Some offers are marked 'compare only' — they cannot be "
+            "[yellow]Some offers are marked 'compare only' \u2014 they cannot be "
             "continued to price verification.[/yellow]"
         )
+
+
+def print_verification_result(result: BookingResult) -> None:
+    """Show the outcome of an offer verification step."""
+    if result.stage == BookingStage.FAILED:
+        console.print(Panel.fit(
+            f"[bold red]Verification failed[/bold red]\n"
+            f"Code: {result.error_code}\n"
+            f"{result.error_message}",
+            border_style="red",
+        ))
+        return
+
+    price_line = f"[bold]{result.total_price:.2f} {result.currency}[/bold]"
+    change_note = ""
+    if result.price_change == "decreased":
+        change_note = (
+            f"\n[green]Price decreased from {result.previous_price:.2f} to "
+            f"{result.current_price:.2f} {result.currency}[/green]"
+        )
+    elif result.price_change == "increased":
+        change_note = (
+            f"\n[bold red]Price increased from {result.previous_price:.2f} to "
+            f"{result.current_price:.2f} {result.currency}[/bold red]"
+        )
+    console.print(Panel.fit(
+        f"[bold green]Offer verified[/bold green]\n"
+        f"Booking ID: {result.booking_id}\n"
+        f"Total: {price_line}{change_note}",
+        border_style="green",
+    ))
+
+
+def print_payment_summary(result: BookingResult) -> None:
+    """Show the payment summary before asking for user approval."""
+    data = result.raw_data
+    lines = [
+        f"[bold]Booking ID:[/bold] {result.booking_id}",
+    ]
+
+    # Masked passenger info
+    passengers = data.get("passengers", [])
+    if passengers:
+        masked = ", ".join(
+            p.get("name_masked", p.get("name", "Passenger"))
+            for p in passengers
+        )
+        lines.append(f"[bold]Passengers:[/bold] {masked}")
+
+    # Price breakdown
+    if data.get("ticket_price"):
+        lines.append(f"[bold]Ticket:[/bold] {data['ticket_price']} {result.currency}")
+    if data.get("baggage_price"):
+        lines.append(f"[bold]Baggage:[/bold] {data['baggage_price']} {result.currency}")
+    if data.get("seat_price"):
+        lines.append(f"[bold]Seat:[/bold] {data['seat_price']} {result.currency}")
+    if data.get("service_fee"):
+        lines.append(f"[bold]Service fee:[/bold] {data['service_fee']} {result.currency}")
+
+    lines.append(f"[bold]Total:[/bold] {result.total_price:.2f} {result.currency}")
+
+    if result.price_change == "decreased" and result.previous_price:
+        lines.append(
+            f"[green]Price decreased from {result.previous_price:.2f}[/green]"
+        )
+    elif result.price_change == "increased" and result.previous_price:
+        lines.append(
+            f"[bold red]Price increased from {result.previous_price:.2f} "
+            f"to {result.current_price:.2f}[/bold red]"
+        )
+
+    if result.order_url:
+        lines.append(f"\n[dim]View order:[/dim] {result.order_url}")
+
+    console.print(Panel.fit(
+        "\n".join(lines),
+        title="Payment Summary",
+        border_style="yellow",
+    ))
+
+
+def print_booking_result(result: BookingResult) -> None:
+    """Show the final outcome of a booking workflow."""
+    if result.stage == BookingStage.TICKETED:
+        console.print(Panel.fit(
+            f"[bold green]Booking ticketed![/bold green]\n"
+            f"Order: {result.order_no}\n"
+            f"Total: {result.total_price:.2f} {result.currency}"
+            + (f"\n[dim]View:[/dim] {result.order_url}" if result.order_url else ""),
+            border_style="green",
+            title="Success",
+        ))
+    elif result.stage == BookingStage.TICKETING_PENDING:
+        console.print(Panel.fit(
+            f"[bold yellow]Ticketing in progress...[/bold yellow]\n"
+            f"Order: {result.order_no}\n"
+            "Processing continues in the background."
+            + (f"\n[dim]View:[/dim] {result.order_url}" if result.order_url else "")
+            + "\n[dim]Use `adapt atlas-order-status {order_no}` to check later.[/dim]",
+            border_style="yellow",
+            title="Pending",
+        ))
+    else:
+        console.print(Panel.fit(
+            f"[bold red]Booking failed[/bold red]\n"
+            f"Stage: {result.stage.value}\n"
+            f"Code: {result.error_code}\n"
+            f"{result.error_message}"
+            + (f"\n[dim]View:[/dim] {result.order_url}" if result.order_url else ""),
+            border_style="red",
+            title="Error",
+        ))

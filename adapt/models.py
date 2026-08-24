@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
 
 class FlightStatus(str, Enum):
@@ -143,3 +144,36 @@ class RerouteOption:
     @property
     def from_atlas(self) -> bool:
         return self.atlas_offer_id is not None
+
+
+class BookingStage(str, Enum):
+    """Where the booking workflow currently stands."""
+    SEARCHING = "SEARCHING"
+    VERIFYING = "VERIFYING"
+    COLLECTING_PASSENGERS = "COLLECTING_PASSENGERS"
+    CREATING_ORDER = "CREATING_ORDER"
+    AWAITING_PAYMENT = "AWAITING_PAYMENT"
+    PAYING = "PAYING"
+    TICKETED = "TICKETED"
+    TICKETING_PENDING = "TICKETING_PENDING"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+@dataclass
+class BookingResult:
+    """Outcome of an Atlas booking workflow execution."""
+    stage: BookingStage
+    offer_id: str = ""
+    booking_id: str = ""
+    order_no: str = ""
+    payment_confirmation_id: str = ""
+    total_price: float = 0.0
+    currency: str = "USD"
+    price_change: str | None = None  # "unchanged", "decreased", "increased"
+    previous_price: float | None = None
+    current_price: float | None = None
+    order_url: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    raw_data: dict[str, Any] = field(default_factory=dict)

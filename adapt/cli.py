@@ -119,6 +119,21 @@ def search(
     adults = adults_override or parsed.get("adults", 1)
     missing = list(parsed.get("missing") or [])
 
+    # --- 2b. Regex safety net: fill gaps the LLM missed -------------------
+    if missing:
+        from adapt.llm.parser import parse_flight_request as _regex_parse
+
+        regex_result = _regex_parse(text.strip())
+        if not origin and regex_result.origin:
+            origin = regex_result.origin
+            missing = [m for m in missing if m != "origin"]
+        if not destination and regex_result.destination:
+            destination = regex_result.destination
+            missing = [m for m in missing if m != "destination"]
+        if not depart and regex_result.depart:
+            depart = regex_result.depart.isoformat()
+            missing = [m for m in missing if m != "depart"]
+
     # Show what we understood.
     understood = (
         f"[bold]Origin:[/bold] {origin or '[red]missing[/red]'}   "
@@ -129,11 +144,15 @@ def search(
     console.print(Panel(understood, title="What I understood", border_style="cyan"))
 
     # --- 3. Re-prompt for anything missing --------------------------------
+    from adapt.llm.parser import _resolve_airport as _resolve
+
     for field in missing:
         if field == "origin":
-            origin = typer.prompt("Departing from (city or airport code)").strip().upper()
+            raw = typer.prompt("Departing from (city or airport code)").strip()
+            origin = _resolve(raw) or raw.upper()
         elif field == "destination":
-            destination = typer.prompt("Flying to (city or airport code)").strip().upper()
+            raw = typer.prompt("Flying to (city or airport code)").strip()
+            destination = _resolve(raw) or raw.upper()
         elif field == "depart":
             raw = typer.prompt("Departure date (e.g. 26 September, 2026-09-26, next Friday)").strip()
             # Run the raw date through the regex parser to normalise it.
@@ -149,16 +168,34 @@ def search(
         console.print("[red]Cannot search without origin, destination, and departure date.[/red]")
         raise typer.Exit(code=1)
 
-    # --- 4. Authorisation check (non-fatal) -------------------------------
+    # --- 4. Authorisation check -------------------------------------------
     ticketing_available = False
     try:
         auth = auth_status()
+        auth_code = auth.get("code", "")
+        if auth_code != "AUTHORIZED":
+            console.print(Panel.fit(
+                f"[bold red]Atlas authorization required[/bold red]\n"
+                f"Your account is not authorized (status: {auth_code}).\n\n"
+                "Run [bold]adapt atlas-auth-login[/bold] and open the link in your browser,\n"
+                "then run [bold]adapt atlas-auth-poll[/bold] after signing in.\n\n"
+                "You can also run [bold]adapt atlas-auth-status[/bold] to check current state.",
+                border_style="red",
+            ))
+            raise typer.Exit(code=1)
         ticketing_available = bool(
-            auth.get("code") == "AUTHORIZED"
-            and (auth.get("data") or {}).get("ticketing_available")
+            (auth.get("data") or {}).get("ticketing_available")
         )
-    except Exception:
-        ticketing_available = False
+    except (RuntimeError, typer.Exit) as exc:
+        # Re-raise typer.Exit so the auth-required message propagates.
+        if isinstance(exc, typer.Exit):
+            raise
+        console.print(Panel.fit(
+            "[bold red]Atlas CLI unavailable[/bold red]\n"
+            "Cannot check authorization. Ensure atlas-flight is installed.",
+            border_style="red",
+        ))
+        raise typer.Exit(code=1)
 
     # --- 5. Run Atlas search ---------------------------------------------
     with console.status(
@@ -177,6 +214,23 @@ def search(
                 border_style="red",
             ))
             raise typer.Exit(code=1)
+
+    # Check for auth or error codes in the response envelope
+    resp_code = response.get("code", "")
+    if resp_code == "AUTHORIZATION_REQUIRED":
+        console.print(Panel.fit(
+            "[bold red]Atlas authorization expired[/bold red]\n"
+            "Your session has expired. Run [bold]adapt atlas-auth-login[/bold] to re-authorize.",
+            border_style="red",
+        ))
+        raise typer.Exit(code=1)
+    if response.get("status") != "success" and resp_code:
+        console.print(Panel.fit(
+            f"[bold red]Atlas error: {resp_code}[/bold red]\n"
+            f"{response.get('message', 'Unknown error')}",
+            border_style="red",
+        ))
+        raise typer.Exit(code=1)
 
     payload = extract_payload(response) or {}
     raw_offers = payload.get("offers", []) or []
@@ -250,6 +304,292 @@ def search(
         ticketing_available=ticketing_available,
         source_label=source,
     )
+
+
+@app.command()
+def book(
+    text: str | None = typer.Option(
+        None,
+        "--nl",
+        help='Natural-language flight request (e.g. "Tokyo to Shanghai on 26 September, 2 adults").',
+    ),
+    seat_policy: str = typer.Option(
+        "continue-without-seat",
+        "--seat-policy",
+        help="Seat fallback policy: continue-without-seat, cancel-order, or accept-similar-seat.",
+    ),
+) -> None:
+    """Book a flight through the Atlas API with interactive checkpoints.
+
+    ADAPT will search Atlas, let you pick an offer, verify the price,
+    collect passenger details, create the order, and process payment --
+    with your approval at every side-effecting step.
+    """
+    from datetime import date as _date
+
+    from adapt.agents.booking import BookingAgent
+    from adapt.atlas import AtlasClient, AtlasError, AtlasUnavailable
+    from adapt.models import BookingStage
+
+    console = fmt.console
+    llm = get_llm_client()
+
+    # --- 1. Get natural-language input (reuse search parsing) ------------
+    if text is None:
+        console.print(Panel.fit(
+            "[bold cyan]ADAPT Flight Booking[/bold cyan]\n"
+            "[dim]Describe the flight you want to book.[/dim]\n"
+            '  [green]"Tokyo to Shanghai on 26 September, 2 adults"[/green]\n'
+            '  [green]"NYC to London, October 5, 1 adult"[/green]',
+            border_style="cyan",
+        ))
+        text = typer.prompt("What flight do you want to book?")
+    if not text or not text.strip():
+        console.print("[red]No flight description provided.[/red]")
+        raise typer.Exit(code=1)
+
+    # Parse the request
+    with console.status("[bold cyan]Parsing your request...[/bold cyan]"):
+        parsed = llm.parse_flight_request(text.strip())
+
+    origin = parsed.get("origin")
+    destination = parsed.get("destination")
+    depart = parsed.get("depart")
+    adults = parsed.get("adults", 1)
+    missing = list(parsed.get("missing") or [])
+
+    # Regex safety net: fill gaps the LLM missed
+    if missing:
+        from adapt.llm.parser import parse_flight_request as _regex_parse
+
+        regex_result = _regex_parse(text.strip())
+        if not origin and regex_result.origin:
+            origin = regex_result.origin
+            missing = [m for m in missing if m != "origin"]
+        if not destination and regex_result.destination:
+            destination = regex_result.destination
+            missing = [m for m in missing if m != "destination"]
+        if not depart and regex_result.depart:
+            depart = regex_result.depart.isoformat()
+            missing = [m for m in missing if m != "depart"]
+
+    # Re-prompt for anything missing
+    from adapt.llm.parser import _resolve_airport as _resolve
+
+    for fld in missing:
+        if fld == "origin":
+            raw = typer.prompt("Departing from (city or airport code)").strip()
+            origin = _resolve(raw) or raw.upper()
+        elif fld == "destination":
+            raw = typer.prompt("Flying to (city or airport code)").strip()
+            destination = _resolve(raw) or raw.upper()
+        elif fld == "depart":
+            raw = typer.prompt("Departure date (e.g. 26 September, 2026-09-26)").strip()
+            from adapt.llm.parser import parse_flight_request as _regex_parse
+            parsed_dt = _regex_parse(f"on {raw}").depart
+            if parsed_dt is None:
+                console.print(f"[red]Could not parse date '{raw}'.[/red]")
+                raise typer.Exit(code=1)
+            depart = parsed_dt.isoformat()
+
+    if not (origin and destination and depart):
+        console.print("[red]Cannot book without origin, destination, and departure date.[/red]")
+        raise typer.Exit(code=1)
+
+    # --- 2. Initialise the booking agent ---------------------------------
+    try:
+        agent = BookingAgent()
+    except AtlasUnavailable as exc:
+        console.print(Panel.fit(
+            f"[bold red]Atlas CLI unavailable[/bold red]\n{exc}",
+            border_style="red",
+        ))
+        raise typer.Exit(code=1)
+
+    # --- 3. Search -------------------------------------------------------
+    with console.status(
+        f"[bold cyan]Searching Atlas for {origin} -> {destination} on {depart}...[/bold cyan]"
+    ):
+        try:
+            offers, ticketing_available = agent.search(
+                origin=origin.upper(),
+                destination=destination.upper(),
+                depart=depart,
+                adults=adults,
+            )
+        except (AtlasError, AtlasUnavailable) as exc:
+            console.print(Panel.fit(
+                f"[bold red]Atlas search failed[/bold red]\n{exc}",
+                border_style="red",
+            ))
+            raise typer.Exit(code=1)
+
+    if not offers:
+        console.print(Panel.fit(
+            f"[yellow]No offers found for {origin} -> {destination} on {depart}.[/yellow]\n"
+            "Try a different date or nearby airport.",
+            border_style="yellow",
+        ))
+        raise typer.Exit(code=0)
+
+    fmt.print_atlas_offers(
+        origin.upper(), destination.upper(), depart, offers,
+        ticketing_available=ticketing_available,
+    )
+
+    if not ticketing_available:
+        console.print(
+            "\n[red]Ticketing is not active on this Atlas account.[/red]\n"
+            "You can search and compare, but booking requires ticketing activation.\n"
+            "Run [bold]adapt atlas-auth-status[/bold] to check, or complete activation "
+            "in the ATRIP workspace."
+        )
+        raise typer.Exit(code=1)
+
+    # Filter bookable offers
+    bookable = [o for o in offers if not o.is_reference_only]
+    if not bookable:
+        console.print(
+            "\n[yellow]All offers are compare-only -- none can be booked.[/yellow]\n"
+            "Ticketing activation may be required."
+        )
+        raise typer.Exit(code=1)
+
+    # --- 4. User picks an offer ------------------------------------------
+    console.print(f"\n[bold]Bookable offers:[/bold] {len(bookable)}")
+    if len(bookable) == 1:
+        selected = bookable[0]
+        console.print(f"Only one bookable offer: [bold]{selected.legs_summary()}[/bold]")
+    else:
+        idx = typer.prompt(
+            f"Which offer to book? (1-{len(bookable)})",
+            type=int,
+            default=1,
+        )
+        if idx < 1 or idx > len(bookable):
+            console.print("[red]Invalid selection.[/red]")
+            raise typer.Exit(code=1)
+        selected = bookable[idx - 1]
+
+    console.print(f"\nSelected: [bold]{selected.legs_summary()}[/bold] "
+                  f"({selected.total_price:.2f} {selected.currency})")
+
+    # --- 5. Verify -------------------------------------------------------
+    with console.status("[bold cyan]Verifying offer price...[/bold cyan]"):
+        verify_result = agent.verify(selected)
+
+    fmt.print_verification_result(verify_result)
+
+    if verify_result.stage == BookingStage.FAILED:
+        raise typer.Exit(code=1)
+
+    # Handle price increase checkpoint
+    if verify_result.price_change == "increased":
+        console.print(
+            f"\n[bold red]Price increased![/bold red] "
+            f"Previous: {verify_result.previous_price:.2f} -> "
+            f"New: {verify_result.current_price:.2f} {verify_result.currency}"
+        )
+        accept = typer.confirm("Do you accept the new price?", default=False)
+        if not accept:
+            console.print("[yellow]Booking cancelled.[/yellow]")
+            raise typer.Exit(code=0)
+        with console.status("[bold cyan]Confirming new price...[/bold cyan]"):
+            confirm_result = agent.confirm_increased_price(verify_result.booking_id)
+        if confirm_result.stage == BookingStage.FAILED:
+            fmt.print_booking_result(confirm_result)
+            raise typer.Exit(code=1)
+
+    # --- 6. Collect passenger details ------------------------------------
+    travelers = verify_result.raw_data.get("travelers", [])
+    passenger_details: list[dict[str, str]] = []
+
+    console.print(Panel.fit(
+        "[bold cyan]Passenger Details[/bold cyan]\n"
+        "[dim]Names should be UPPERCASE FAMILY/GIVEN (e.g. CARTER/JOHN).[/dim]",
+        border_style="cyan",
+    ))
+
+    for i, traveler in enumerate(travelers, start=1):
+        ptype = traveler.get("passenger_type", "adult")
+        tid = traveler.get("traveler_id", "")
+        console.print(f"\n[bold]Passenger {i}[/bold] ({ptype}, ID: {tid})")
+        name = typer.prompt("  Full name (FAMILY/GIVEN)").strip().upper()
+        gender = typer.prompt("  Gender (M/F)", default="M").strip().upper()
+        birthday = typer.prompt("  Birthday (YYYY-MM-DD)").strip()
+        nationality = typer.prompt("  Nationality (2-letter, e.g. US, JP)").strip().upper()
+
+        # Document (optional for now)
+        doc_type = typer.prompt("  Document type (PP=passport, leave empty to skip)", default="").strip()
+        doc = None
+        if doc_type:
+            doc_number = typer.prompt("  Document number").strip()
+            doc_country = typer.prompt("  Issuing country (2-letter)").strip().upper()
+            doc_expires = typer.prompt("  Expiry date (YYYY-MM-DD)").strip()
+            doc = {
+                "type": doc_type,
+                "number": doc_number,
+                "issuing_country": doc_country,
+                "expires": doc_expires,
+            }
+
+        passenger_details.append({
+            "name": name,
+            "gender": gender,
+            "birthday": birthday,
+            "nationality": nationality,
+            "document": doc,
+        })
+
+    # Contact info
+    console.print("\n[bold]Contact Information[/bold]")
+    contact_name = typer.prompt("  Contact name (FAMILY/GIVEN)").strip().upper()
+    contact_email = typer.prompt("  Email (optional)", default="").strip()
+    contact_mobile = typer.prompt("  Mobile (optional, e.g. 001-5551234567)", default="").strip()
+    contact = {"name": contact_name}
+    if contact_email:
+        contact["email"] = contact_email
+    if contact_mobile:
+        contact["mobile"] = contact_mobile
+
+    # --- 7. Create order -------------------------------------------------
+    with console.status("[bold cyan]Creating order...[/bold cyan]"):
+        order_result = agent.create_order(
+            verify_result,
+            passenger_details,
+            contact,
+            seat_policy=seat_policy,
+        )
+
+    if order_result.stage == BookingStage.COLLECTING_PASSENGERS:
+        console.print(Panel.fit(
+            f"[yellow]Passenger info issue[/yellow]\n"
+            f"Code: {order_result.error_code}\n"
+            f"{order_result.error_message}",
+            border_style="yellow",
+        ))
+        console.print("Please re-run and correct the passenger details.")
+        raise typer.Exit(code=1)
+
+    if order_result.stage == BookingStage.FAILED:
+        fmt.print_booking_result(order_result)
+        raise typer.Exit(code=1)
+
+    # --- 8. Payment checkpoint -------------------------------------------
+    if order_result.stage == BookingStage.AWAITING_PAYMENT:
+        fmt.print_payment_summary(order_result)
+        approve = typer.confirm("\nApprove this payment?", default=False)
+        if not approve:
+            console.print("[yellow]Payment cancelled. Order was created but not paid.[/yellow]")
+            raise typer.Exit(code=0)
+
+        with console.status("[bold cyan]Processing payment...[/bold cyan]"):
+            pay_result = agent.pay(order_result)
+
+        fmt.print_booking_result(pay_result)
+    else:
+        console.print(f"\n[yellow]Unexpected stage: {order_result.stage.value}[/yellow]")
+        fmt.print_booking_result(order_result)
 
 
 @app.command()

@@ -4,6 +4,7 @@ Responsibilities:
   * locate the `atlas-flight` executable (PATH or uv tool dir)
   * check authorization status
   * run a search for a single (origin, destination, departure date, adults) tuple
+  * verify offers, create orders, pay, and check ticketing status
   * parse the JSON response envelope and convert offers to `AtlasOffer`
 
 Failure modes are typed:
@@ -13,8 +14,9 @@ Failure modes are typed:
     cannot use (auth required, rate limit, upstream failure, etc.).
 
 The wrapper never inspects credentials, never retries on its own, and never
-mutates anything. Side-effecting Atlas commands (order, pay) are intentionally
-not exposed — ADAPT currently uses Atlas for discovery only.
+mutates anything without explicit caller intent. Side-effecting commands
+(order, pay) are exposed as dedicated methods so the agent can gate them
+behind user checkpoints.
 """
 
 from __future__ import annotations
@@ -228,10 +230,163 @@ class AtlasClient:
 
     # -- public API ---------------------------------------------------------
 
+    # -- verification -----------------------------------------------------
+
+    def verify(self, offer_id: str) -> dict[str, Any]:
+        """Verify an offer and return the full response envelope.
+
+        The caller must inspect `code` to branch:
+          - success: `data` contains `booking_id`, price info, travelers.
+          - OFFER_EXPIRED / FLIGHT_UNAVAILABLE: caller should re-search.
+          - PRICE_CONFIRMATION_REQUIRED: price increased; user must confirm.
+        """
+        return self._run_json(["offer", "verify", "--offer-id", offer_id, "--json"])
+
+    def confirm_price(self, booking_id: str) -> dict[str, Any]:
+        """Confirm an increased price after user approval."""
+        return self._run_json(
+            ["booking", "confirm-price", "--booking-id", booking_id, "--json"]
+        )
+
+    # -- optional services ------------------------------------------------
+
+    def list_baggage(self, booking_id: str) -> dict[str, Any]:
+        """List available baggage options for a booking."""
+        return self._run_json(
+            ["booking", "baggage", "list", "--booking-id", booking_id, "--json"]
+        )
+
+    def select_baggage(
+        self, booking_id: str, traveler_id: str, segment_id: str, baggage_id: str
+    ) -> dict[str, Any]:
+        """Select a baggage option."""
+        return self._run_json([
+            "booking", "baggage", "select",
+            "--booking-id", booking_id,
+            "--traveler-id", traveler_id,
+            "--segment-id", segment_id,
+            "--baggage-id", baggage_id,
+            "--json",
+        ])
+
+    def list_seats(self, booking_id: str) -> dict[str, Any]:
+        """List available seats for a booking."""
+        return self._run_json(
+            ["booking", "seat", "list", "--booking-id", booking_id, "--json"]
+        )
+
+    def select_seat(
+        self, booking_id: str, traveler_id: str, segment_id: str, seat_id: str
+    ) -> dict[str, Any]:
+        """Select a seat."""
+        return self._run_json([
+            "booking", "seat", "select",
+            "--booking-id", booking_id,
+            "--traveler-id", traveler_id,
+            "--segment-id", segment_id,
+            "--seat-id", seat_id,
+            "--json",
+        ])
+
+    # -- order and payment ------------------------------------------------
+
+    def create_order(
+        self,
+        booking_id: str,
+        passengers: dict[str, Any],
+        *,
+        seat_policy: str = "continue-without-seat",
+    ) -> dict[str, Any]:
+        """Create an order by piping a JSON passenger payload via stdin.
+
+        `passengers` should be the full `{"passengers": [...], "contact": {...}}`
+        dict as described in the passenger-input contract.
+
+        Returns the full envelope. Caller must check `code`:
+          - PAYMENT_CONFIRMATION_REQUIRED: present summary, wait for approval.
+          - ORDER_CREATION_UNKNOWN: do NOT retry.
+        """
+        payload_json = json.dumps(passengers)
+        try:
+            result = subprocess.run(
+                [
+                    self._binary,
+                    "order", "create",
+                    "--booking-id", booking_id,
+                    "--passengers-stdin",
+                    "--seat-policy", seat_policy,
+                    "--json",
+                ],
+                input=payload_json,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise AtlasUnavailable(f"atlas-flight binary missing at {self._binary}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AtlasUnavailable(f"atlas-flight timed out after {self._timeout}s") from exc
+        except OSError as exc:
+            raise AtlasUnavailable(f"Could not execute atlas-flight: {exc}") from exc
+
+        if result.returncode != 0 and not result.stdout.strip():
+            raise AtlasUnavailable(
+                f"atlas-flight exited {result.returncode} with no output: "
+                f"{result.stderr.strip() or 'no stderr'}"
+            )
+        try:
+            envelope = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise AtlasUnavailable(
+                f"atlas-flight returned non-JSON output: {result.stdout[:200]!r}"
+            ) from exc
+
+        if not isinstance(envelope, dict) or "code" not in envelope:
+            raise AtlasUnavailable(f"atlas-flight response missing 'code': {envelope!r}")
+
+        code = envelope.get("code", "")
+        if envelope.get("status") != "success" and code not in (
+            "PAYMENT_CONFIRMATION_REQUIRED",
+            "PASSENGER_INFO_REQUIRED",
+            "PASSENGER_INFO_INVALID",
+            "CONTACT_INFO_INVALID",
+        ):
+            raise AtlasError(code, envelope.get("message", "unknown error"))
+        return envelope
+
+    def pay(self, payment_confirmation_id: str) -> dict[str, Any]:
+        """Pay for an order using the single-use confirmation ID.
+
+        Returns the full envelope. Caller must check `code`:
+          - TICKETED: success.
+          - TICKETING_PENDING: processing continues.
+          - PAYMENT_BALANCE_CHECK_REQUIRED: insufficient balance.
+        """
+        return self._run_json([
+            "order", "pay",
+            "--confirmation-id", payment_confirmation_id,
+            "--json",
+        ])
+
+    def order_status(self, order_no: str) -> dict[str, Any]:
+        """Query order/ticketing status."""
+        return self._run_json([
+            "order", "status",
+            "--order-no", order_no,
+            "--json",
+        ])
+
+    # -- authorization ----------------------------------------------------
+
+    def auth_status(self) -> dict[str, Any]:
+        """Return the full auth status envelope."""
+        return self._run_json(["auth", "status", "--json"])
+
     def is_authorized(self) -> bool:
         """Return True only when `auth status` reports AUTHORIZED."""
         try:
-            env = self._run_json(["auth", "status", "--json"])
+            env = self.auth_status()
         except AtlasUnavailable:
             return False
         except AtlasError:
