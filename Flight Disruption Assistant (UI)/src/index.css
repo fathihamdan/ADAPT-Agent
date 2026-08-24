@@ -60,6 +60,11 @@ body {
   to { opacity: 1; }
 }
 
+@keyframes skeletonPulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
 .animate-slide-up {
   animation: slideUp 0.5s ease forwards;
 }

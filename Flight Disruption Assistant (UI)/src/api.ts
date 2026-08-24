@@ -1,4 +1,4 @@
-import type { FlightRecord, PassengerDetail, QueueRow, SystemStatus } from './types'
+import type { AirportInfo, FlightRecord, PassengerDetail, PassengerRouteSearchResult, QueueRow, SystemStatus } from './types'
 
 async function extractErrorDetail(res: Response, fallback: string): Promise<string> {
   try {
@@ -54,6 +54,31 @@ export async function fetchLiveTrack(flightIata: string): Promise<PassengerDetai
   const res = await fetch(`/api/track/${flightIata}`)
   if (!res.ok) {
     throw new Error(await extractErrorDetail(res, `No live data found for flight ${flightIata} (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function fetchAirports(): Promise<AirportInfo[]> {
+  const res = await fetch('/api/airports')
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to load airports (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function searchPassengerRoutes(request: {
+  passenger_name: string
+  origin: string
+  destination: string
+  departure: string
+}): Promise<PassengerRouteSearchResult> {
+  const res = await fetch('/api/passenger-search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to search routes (${res.status})`))
   }
   return res.json()
 }

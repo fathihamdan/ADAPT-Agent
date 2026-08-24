@@ -84,6 +84,47 @@ export interface Reroute {
   options: RerouteOption[]
 }
 
+export interface AirportInfo {
+  code: string
+  name: string
+  city: string
+}
+
+export interface PassengerRouteLeg {
+  flight_no: string
+  airline: string
+  origin: string
+  destination: string
+  departs: string
+  arrives: string
+}
+
+export interface PassengerRouteOption {
+  code: string
+  route: string
+  departs: string
+  arrives: string
+  duration_minutes: number
+  layover_minutes: number | null
+  connections: number
+  airlines: string
+  legs: PassengerRouteLeg[]
+  recommended: boolean
+  source: string
+  price: number | null
+  currency: string | null
+}
+
+export interface PassengerRouteSearchResult {
+  passenger_name: string
+  origin: string
+  destination: string
+  departure: string
+  narrative: string
+  narrative_html: string
+  options: PassengerRouteOption[]
+}
+
 export interface PassengerDetail {
   passenger_id: string
   name: string

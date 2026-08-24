@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import FrameDisruption from './components/FrameDisruption'
 import FrameRiskPredictor from './components/FrameRiskPredictor'
 import FrameRerouting from './components/FrameRerouting'
+import PassengerSearch from './components/PassengerSearch'
 import {
   fetchQueue, refreshQueue, fetchPassengerDetail, fetchLiveTrack,
   fetchSystemStatus, fetchFlights,
@@ -9,13 +10,14 @@ import {
 import type { FlightRecord, PassengerDetail, QueueRow, SystemStatus } from './types'
 
 type FlightSortKey = keyof Pick<FlightRecord, 'flight_no' | 'origin' | 'destination' | 'sched_dep' | 'status' | 'delay_minutes'>
-type View = 'queue' | 'flights' | 'sources'
+type View = 'queue' | 'flights' | 'sources' | 'passenger-search'
 type DetailTab = 'disruption' | 'risk' | 'reroute'
 
 const NAV_ITEMS: Array<{ icon: string; label: string; view: View }> = [
   { icon: '🔗', label: 'Connection Queue', view: 'queue' },
   { icon: '✈️', label: 'Flights', view: 'flights' },
   { icon: '📡', label: 'Data Sources', view: 'sources' },
+  { icon: '＋', label: 'Passenger Search', view: 'passenger-search' },
 ]
 
 const STATUS_LABEL: Record<string, { label: string; bg: string; color: string }> = {
@@ -582,6 +584,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {view === 'passenger-search' && <PassengerSearch />}
 
       {view === 'flights' && (
         <div

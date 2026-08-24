@@ -7,10 +7,12 @@ JSON-shaped view of the same orchestrator output.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from adapt.utils.env import load_dotenv
 from web import service
@@ -27,6 +29,36 @@ if not UI_DIST_DIR.is_dir():
     )
 
 app = FastAPI(title="ADAPT-Agent")
+
+
+class PassengerRouteSearch(BaseModel):
+    passenger_name: str = Field(min_length=1, max_length=120)
+    origin: str = Field(min_length=3, max_length=3)
+    destination: str = Field(min_length=3, max_length=3)
+    departure: datetime
+
+
+@app.post("/api/passenger-search")
+def api_search_passenger_routes(request: PassengerRouteSearch) -> dict:
+    try:
+        return service.search_passenger_routes(
+            passenger_name=request.passenger_name,
+            origin=request.origin,
+            destination=request.destination,
+            departure=request.departure,
+        )
+    except ValueError as exc:
+        # Input problem the user can fix (same airport twice, unknown airport
+        # code) - surface the message verbatim so the form can show it.
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=f"AI backend error: {exc}") from exc
+
+
+@app.get("/api/airports")
+def api_list_airports() -> list[dict]:
+    """Airports the passenger-search form can offer - code, city and name."""
+    return service.list_airports()
 
 
 @app.get("/api/status")

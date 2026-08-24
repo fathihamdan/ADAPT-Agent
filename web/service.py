@@ -9,16 +9,128 @@ the frontend instead of being wired to a fake number.
 from __future__ import annotations
 
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
-from adapt.agents import connection_risk, disruption_explainer, orchestrator
+from adapt.agents import connection_risk, disruption_explainer, orchestrator, rerouting
 from adapt.agents.connection_risk import DEPLANE_BUFFER_MINUTES
 from adapt.agents.connections import find_connections
 from adapt.data import atlas_source, aviationstack_source
-from adapt.data.mock_data import find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
+from adapt.data.mock_data import AIRPORTS, find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
 from adapt.llm import get_llm_client
-from adapt.models import Flight, Passenger, RiskLevel
+from adapt.models import Flight, Passenger, RerouteOption, RiskLevel
+
+
+def list_airports() -> list[dict[str, Any]]:
+    """Airport picker data for the passenger-search form (code + city + name)."""
+    return [
+        {"code": a.code, "name": a.name, "city": a.city}
+        for a in sorted(AIRPORTS.values(), key=lambda a: a.city)
+    ]
+
+
+def _route_option_dict(option: RerouteOption, recommended: bool) -> dict[str, Any]:
+    """One ranked route option for the passenger-search result, with a per-leg
+    breakdown so the UI can show exactly what it's proposing (not just a joined
+    flight-number string).
+    """
+    legs = option.replacement_legs
+    first, last = legs[0], legs[-1]
+    duration_minutes = round((option.new_arrival - first.sched_dep).total_seconds() / 60)
+    layover_minutes = (
+        round((legs[1].sched_dep - legs[0].sched_arr).total_seconds() / 60)
+        if len(legs) > 1
+        else None
+    )
+    return {
+        "code": " + ".join(leg.flight_no for leg in legs),
+        "route": option.notes or f"{first.origin} \u2192 {last.destination}",
+        "departs": first.sched_dep.strftime("%a %H:%M"),
+        "arrives": option.new_arrival.strftime("%a %H:%M"),
+        "duration_minutes": duration_minutes,
+        "layover_minutes": layover_minutes,
+        "connections": option.connections,
+        "airlines": ", ".join(dict.fromkeys(leg.airline for leg in legs)),
+        "legs": [
+            {
+                "flight_no": leg.flight_no,
+                "airline": leg.airline,
+                "origin": leg.origin,
+                "destination": leg.destination,
+                "departs": leg.sched_dep.strftime("%a %H:%M"),
+                "arrives": leg.sched_arr.strftime("%a %H:%M"),
+            }
+            for leg in legs
+        ],
+        "recommended": recommended,
+        "source": "Atlas live inventory" if option.from_atlas else "mock schedule",
+        "price": option.atlas_price,
+        "currency": option.atlas_currency,
+    }
+
+
+def search_passenger_routes(
+    passenger_name: str,
+    origin: str,
+    destination: str,
+    departure: datetime,
+) -> dict[str, Any]:
+    """Find and rank the best three routes for a new passenger booking search.
+
+    Raises ValueError for input problems the caller can fix (same airport twice,
+    or an airport outside the schedule database when no live source is
+    configured) - main.py maps those to a 400 so the UI shows the message as-is.
+    """
+    origin = origin.strip().upper()
+    destination = destination.strip().upper()
+
+    if origin == destination:
+        raise ValueError("Origin and destination must be different airports.")
+
+    # The frontend sends ISO-8601 with a UTC offset (Date.toISOString()), which
+    # Pydantic parses as timezone-aware - but mock flight times are naive local,
+    # and comparing naive with aware datetimes raises TypeError. Normalize to
+    # naive local time before any schedule comparison happens.
+    if departure.tzinfo is not None:
+        departure = departure.astimezone().replace(tzinfo=None)
+
+    use_atlas = atlas_source.is_available()
+    if not use_atlas:
+        # With mock data the searchable universe is the airport table - fail fast
+        # with the list of valid codes instead of a silent empty result.
+        unknown = [code for code in (origin, destination) if get_airport(code) is None]
+        if unknown:
+            supported = ", ".join(sorted(AIRPORTS))
+            raise ValueError(
+                f"Airport '{unknown[0]}' is not in the schedule database. "
+                f"Available airports: {supported}."
+            )
+
+    name = passenger_name.strip() or "the passenger"
+    llm = get_llm_client()
+    options, narrative = rerouting.recommend(
+        origin=origin,
+        destination=destination,
+        not_before=departure,
+        original_arrival=departure,
+        reason=f"you need to book a new flight for {name}",
+        llm=llm,
+        max_options=3,
+        use_atlas=use_atlas,
+    )
+
+    return {
+        "passenger_name": name,
+        "origin": origin,
+        "destination": destination,
+        "departure": departure.isoformat(),
+        "narrative": narrative,
+        "narrative_html": _markdown_bold_to_html(narrative),
+        "options": [
+            _route_option_dict(option, recommended=index == 0)
+            for index, option in enumerate(options)
+        ],
+    }
 
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 

@@ -235,6 +235,7 @@ def recommend(
     reason: str,
     llm: LLMClient,
     exclude_flight_no: str | None = None,
+    max_options: int = 3,
     use_atlas: bool = False,
     atlas_env: str = "production",
 ) -> tuple[list[RerouteOption], str]:
@@ -244,9 +245,19 @@ def recommend(
         not_before,
         original_arrival,
         exclude_flight_no=exclude_flight_no,
+        max_options=max_options,
         use_atlas=use_atlas,
         atlas_env=atlas_env,
     )
+
+    # No point spending an LLM call narrating an empty result set - return a
+    # deterministic message the CLI and the web API can both show as-is.
+    if not options:
+        note = f" ({atlas_note})" if atlas_note else ""
+        return [], (
+            f"No {origin} -> {destination} flights found departing after "
+            f"{not_before.strftime('%a %H:%M')}{note}."
+        )
 
     context: dict[str, Any] = {
         "destination": destination,
