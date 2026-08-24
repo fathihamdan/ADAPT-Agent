@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import os
+import re
+from datetime import date
 from typing import Any
 
 from adapt.llm.base import LLMClient
 from adapt.llm.prompts import EXPLAINER_SYSTEM, REROUTE_SYSTEM, RISK_SYSTEM
 
 _DEFAULT_MODEL = os.environ.get("ADAPT_MODEL", "claude-sonnet-5")
+
+_NL_SEARCH_SYSTEM = (
+    "You are ADAPT's flight-request parser. Given a free-form English sentence "
+    "describing a flight the user wants, extract four fields as JSON:\n"
+    '  {"origin": "IATA airport code or null, '
+    '"destination": "IATA airport code or null, '
+    '"depart": "YYYY-MM-DD or null, '
+    '"adults": integer (default 1)}\n'
+    "Return ONLY the JSON object — no prose, no markdown fences. If a city name is "
+    "given instead of an airport code, pick the primary international airport for that "
+    "city (e.g. Tokyo -> NRT, Shanghai -> PVG, London -> LHR). If today's date is "
+    "implied ('today', 'tonight', 'this weekend'), use it; if a relative date is "
+    "given ('tomorrow', 'next friday'), resolve it against today. Set adults=1 if not "
+    "mentioned."
+)
 
 
 class AnthropicClient(LLMClient):
@@ -78,3 +96,49 @@ class AnthropicClient(LLMClient):
             "Recommend the best option and briefly justify it."
         )
         return self._generate(REROUTE_SYSTEM, prompt)
+
+    def parse_flight_request(self, text: str) -> dict[str, Any]:
+        """Use the active Claude model to extract origin/destination/date/adults;
+        fall back to the shared regex parser on any failure."""
+        from adapt.llm.parser import parse_flight_request as _regex_parse
+
+        today_hint = f"Today is {date.today().isoformat()}. "
+        try:
+            raw = self._generate(_NL_SEARCH_SYSTEM, today_hint + text)
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                cleaned = re.sub(r"\s*```$", "", cleaned)
+            parsed = json.loads(cleaned)
+            if not isinstance(parsed, dict):
+                raise ValueError("model returned non-object JSON")
+        except Exception:
+            fallback = _regex_parse(text)
+            return {
+                "origin": fallback.origin,
+                "destination": fallback.destination,
+                "depart": fallback.depart.isoformat() if fallback.depart else None,
+                "adults": fallback.adults,
+                "missing": fallback.missing or [],
+                "source": "regex-fallback",
+            }
+
+        adults = parsed.get("adults", 1)
+        try:
+            adults = max(1, min(9, int(adults)))
+        except (TypeError, ValueError):
+            adults = 1
+
+        missing = [
+            field
+            for field in ("origin", "destination", "depart")
+            if not parsed.get(field)
+        ]
+        return {
+            "origin": (parsed.get("origin") or "").upper() or None,
+            "destination": (parsed.get("destination") or "").upper() or None,
+            "depart": parsed.get("depart"),
+            "adults": adults,
+            "missing": missing,
+            "source": "llm",
+        }

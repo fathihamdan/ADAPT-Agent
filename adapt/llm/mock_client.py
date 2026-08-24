@@ -150,6 +150,7 @@ class MockLLMClient(LLMClient):
         options = context.get("options", [])
         destination = context.get("destination", "the passenger's destination")
         reason = context.get("reason", "the passenger's original connection is at risk")
+        atlas_note = context.get("atlas_note")
 
         if not options:
             return (
@@ -161,15 +162,30 @@ class MockLLMClient(LLMClient):
         lines = [
             f"Because {reason}, here are the best alternatives to reach {destination}:",
         ]
+        if atlas_note:
+            lines.append(f"  (source: {atlas_note})")
         for i, opt in enumerate(options, start=1):
             marker = "Recommended: " if i == 1 else ""
+            price_suffix = ""
+            if opt.get("price"):
+                status = opt.get("price_status") or "reference"
+                bookable = opt.get("bookable")
+                if bookable and status == "current":
+                    price_suffix = f" — {opt['price']} (live, bookable)"
+                else:
+                    price_suffix = f" — {opt['price']} (reference price — compare only)"
             lines.append(
                 f"  {i}. {marker}{opt['legs_summary']} — arrives {opt['arrival']} "
                 f"({opt['delay_vs_original']:+d} min vs. original plan, "
-                f"{opt['connections']} connection(s))"
+                f"{opt['connections']} connection(s)){price_suffix}"
             )
         lines.append(
             f"Best option is flight(s) {best['legs_summary']}, arriving {best['arrival']}, "
             f"which minimizes total delay while keeping the itinerary simple."
         )
+        if any(o.get("from_atlas") for o in options):
+            lines.append(
+                "Offers from Atlas are comparison-only until you verify the live fare and "
+                "confirm payment with the booking agent."
+            )
         return "\n".join(lines)

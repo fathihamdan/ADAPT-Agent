@@ -136,3 +136,91 @@ def print_reroute(reason: str, options: list[RerouteOption], narrative: str) -> 
 
 def print_section(title: str) -> None:
     console.rule(f"[bold cyan]{title}[/bold cyan]")
+
+
+def print_atlas_offers(
+    origin: str,
+    destination: str,
+    depart_date: str,
+    offers,
+    *,
+    ticketing_available: bool,
+    source_label: str = "llm",
+) -> None:
+    """Render a list of `AtlasOffer` records as a Rich table.
+
+    `ticketing_available` gates the bookable-vs-reference labelling so users
+    see the right expectation even when their account could in principle book.
+    """
+    console.print(
+        Panel.fit(
+            f"[bold]Atlas Flight Search[/bold]: {origin} -> {destination} on {depart_date}\n"
+            f"[dim]Parser: {source_label}[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    if not offers:
+        console.print(
+            Panel(
+                f"[yellow]Atlas returned no offers for {origin} -> {destination} on "
+                f"{depart_date}.[/yellow]\n"
+                "Try a different date, a nearby alternate airport, or a more "
+                "flexible departure time.",
+                title="No results",
+                border_style="yellow",
+            )
+        )
+        return
+
+    table = Table(header_style="bold cyan", show_lines=False)
+    table.add_column("#", justify="right", no_wrap=True)
+    table.add_column("Flights")
+    table.add_column("Dep -> Arr")
+    table.add_column("Duration")
+    table.add_column("Stops", justify="center")
+    table.add_column("Total")
+    table.add_column("Status")
+
+    for i, offer in enumerate(offers, start=1):
+        dep_str = offer.departure.strftime("%a %H:%M") if offer.departure else "-"
+        arr_str = offer.arrival.strftime("%a %H:%M") if offer.arrival else "-"
+        next_day = (
+            "+1" if offer.arrival and offer.departure
+            and offer.arrival.date() > offer.departure.date()
+            else ""
+        )
+        hours, mins = divmod(offer.duration_minutes, 60)
+        duration = f"{hours}h {mins:02d}m"
+        connections = offer.connections
+        stops_text = "direct" if connections == 0 else f"{connections} stop{'s' if connections > 1 else ''}"
+
+        price = f"{offer.total_price:.2f} {offer.currency}"
+        if offer.is_reference_only or not ticketing_available:
+            status = "[yellow]compare only[/yellow]"
+        else:
+            status = "[green]bookable[/green]"
+
+        table.add_row(
+            str(i),
+            offer.legs_summary(),
+            f"{dep_str} -> {arr_str}{next_day}",
+            duration,
+            stops_text,
+            price,
+            status,
+        )
+    console.print(table)
+
+    if not ticketing_available:
+        console.print(
+            "[yellow]Ticketing is not active on this Atlas account — offers above "
+            "are for comparison only.[/yellow]\n"
+            "Complete the activation in the ATRIP workspace, then re-run this "
+            "search to unlock price verification and booking."
+        )
+    elif any(o.is_reference_only for o in offers):
+        console.print(
+            "[yellow]Some offers are marked 'compare only' — they cannot be "
+            "continued to price verification.[/yellow]"
+        )

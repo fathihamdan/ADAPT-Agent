@@ -25,8 +25,8 @@ from adapt.models import (
     Passenger,
 )
 
-# Anchor "today" for the demo so output is reproducible.
-TODAY = datetime(2026, 8, 22, 6, 0)
+# Anchor "today" to the real current date so schedules stay relevant.
+TODAY = datetime.now().replace(hour=6, minute=0, second=0, microsecond=0)
 
 
 def _t(hour: int, minute: int = 0, day_offset: int = 0) -> datetime:
