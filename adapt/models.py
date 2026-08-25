@@ -140,6 +140,17 @@ class RerouteOption:
     atlas_price_status: str | None = None  # "reference" | "current"
     atlas_bookable: bool | None = None
     atlas_ancillary_supported: list[str] | None = None
+    # True when ADAPT stitched two independent Atlas offers together because no
+    # through-fare existed. The passenger holds SEPARATE TICKETS: a missed
+    # connection is not the airline's responsibility, and booking it means
+    # creating one order per entry in `atlas_offer_ids` - never just the first.
+    self_transfer: bool = False
+    # Every component offer, in travel order. Single-ticket options leave this
+    # empty; `atlas_offer_id` alone identifies them.
+    atlas_offer_ids: list[str] = field(default_factory=list)
+    # Index of the leg *after* which the ticket changes hands. Either ticket may
+    # itself be multi-segment, so this cannot be inferred from the leg list.
+    self_transfer_after_leg: int | None = None
 
     @property
     def from_atlas(self) -> bool:

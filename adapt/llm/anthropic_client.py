@@ -9,7 +9,12 @@ from datetime import date
 from typing import Any
 
 from adapt.llm.base import LLMClient
-from adapt.llm.prompts import EXPLAINER_SYSTEM, REROUTE_SYSTEM, RISK_SYSTEM
+from adapt.llm.prompts import (
+    EXPLAINER_SYSTEM,
+    REROUTE_SYSTEM,
+    RISK_SYSTEM,
+    format_reroute_options,
+)
 
 _DEFAULT_MODEL = os.environ.get("ADAPT_MODEL", "claude-sonnet-5")
 
@@ -83,12 +88,7 @@ class AnthropicClient(LLMClient):
         return self._generate(RISK_SYSTEM, prompt)
 
     def recommend_reroute(self, context: dict[str, Any]) -> str:
-        options = context.get("options", [])
-        options_text = "\n".join(
-            f"{i}. {opt['legs_summary']} -> arrives {opt['arrival']} "
-            f"({opt['delay_vs_original']:+d} min vs original, {opt['connections']} connection(s))"
-            for i, opt in enumerate(options, start=1)
-        ) or "(none found)"
+        options_text = format_reroute_options(context.get("options", []))
         prompt = (
             f"Destination: {context.get('destination', 'unknown')}\n"
             f"Reason for rerouting: {context.get('reason', 'unknown')}\n"

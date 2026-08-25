@@ -179,10 +179,28 @@ class MockLLMClient(LLMClient):
                 f"({opt['delay_vs_original']:+d} min vs. original plan, "
                 f"{opt['connections']} connection(s)){price_suffix}"
             )
+            if opt.get("layovers"):
+                lines.append(f"     transit: {', '.join(opt['layovers'])}")
+            if opt.get("self_transfer"):
+                lines.append(
+                    "     separate tickets — the passenger self-transfers, so a misconnect "
+                    "is not protected by either airline"
+                )
+        rationale = (
+            "which minimizes total delay while keeping the itinerary simple"
+            if not best.get("connections")
+            else "the earliest arrival available on this route"
+        )
         lines.append(
             f"Best option is flight(s) {best['legs_summary']}, arriving {best['arrival']}, "
-            f"which minimizes total delay while keeping the itinerary simple."
+            f"{rationale}."
         )
+        if best.get("self_transfer"):
+            lines.append(
+                "Note it is a self-transfer built from separate tickets because no single "
+                "through-fare exists on this route — quote the transit time to the customer "
+                "and book each ticket separately."
+            )
         if any(o.get("from_atlas") for o in options):
             lines.append(
                 "Offers from Atlas are comparison-only until you verify the live fare and "

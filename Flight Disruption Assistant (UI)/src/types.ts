@@ -97,6 +97,12 @@ export interface PassengerRouteLeg {
   destination: string
   departs: string
   arrives: string
+  /** Transit gap after this leg; null on the final leg. */
+  layover_after_minutes: number | null
+  /** Gap is shorter than the minimum connection buffer. */
+  layover_tight: boolean
+  /** The gap where the passenger changes ticket - a delay here strands them. */
+  self_transfer_after: boolean
 }
 
 export interface PassengerRouteOption {
@@ -105,7 +111,13 @@ export interface PassengerRouteOption {
   departs: string
   arrives: string
   duration_minutes: number
+  /** Total time on the ground across all stops; null for a nonstop. */
   layover_minutes: number | null
+  layover_airports: string[]
+  tight_connection: boolean
+  /** Final leg's arrival airport - Atlas may answer with a nearby metro airport. */
+  arrives_at: string
+  destination_mismatch: boolean
   connections: number
   airlines: string
   legs: PassengerRouteLeg[]
@@ -113,6 +125,11 @@ export interface PassengerRouteOption {
   source: string
   price: number | null
   currency: string | null
+  /** Two independent Atlas tickets stitched together - no airline protection. */
+  self_transfer: boolean
+  ticket_count: number
+  /** Airport where the ticket changes hands; null unless self_transfer. */
+  transfer_airport: string | null
 }
 
 export interface PassengerRouteSearchResult {

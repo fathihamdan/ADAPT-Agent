@@ -17,7 +17,7 @@ const NAV_ITEMS: Array<{ icon: string; label: string; view: View }> = [
   { icon: '🔗', label: 'Connection Queue', view: 'queue' },
   { icon: '✈️', label: 'Flights', view: 'flights' },
   { icon: '📡', label: 'Data Sources', view: 'sources' },
-  { icon: '＋', label: 'Passenger Search', view: 'passenger-search' },
+  { icon: '＋', label: 'New Passenger', view: 'passenger-search' },
 ]
 
 const STATUS_LABEL: Record<string, { label: string; bg: string; color: string }> = {

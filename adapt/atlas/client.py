@@ -13,10 +13,11 @@ Failure modes are typed:
   * `AtlasError` — the CLI ran but returned a non-success `code` the caller
     cannot use (auth required, rate limit, upstream failure, etc.).
 
-The wrapper never inspects credentials, never retries on its own, and never
-mutates anything without explicit caller intent. Side-effecting commands
-(order, pay) are exposed as dedicated methods so the agent can gate them
-behind user checkpoints.
+The wrapper never inspects credentials and never mutates anything without
+explicit caller intent. Side-effecting commands (order, pay) are exposed as
+dedicated methods so the agent can gate them behind user checkpoints, and they
+are never retried automatically - only read-only commands are, and only when
+Atlas itself sets `retryable: true` on the envelope.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -32,6 +35,23 @@ from typing import Any
 
 # The minimum CLI version the contract was validated against.
 MIN_CLI_VERSION = (0, 3, 12)
+
+# Atlas returns `status: retryable_error` with `retryable: true` for transient
+# upstream blips (SERVICE_TEMPORARILY_UNAVAILABLE). Read-only commands retry a
+# few times before surfacing the failure; side-effecting ones never do.
+DEFAULT_RETRIES = 2
+RETRY_BACKOFF_SECONDS = 1.5
+
+# Searches get fewer attempts than other reads: connection building fires a dozen
+# of them, and a route Atlas cannot serve tends to fail every time, so extra
+# attempts mostly buy the operator a longer wait.
+SEARCH_RETRIES = 1
+
+# Building connecting itineraries means searching the same hub legs repeatedly.
+# Cache successful searches briefly so one operator request doesn't pay for the
+# same CLI round-trip twice. Kept well under offer expiry, and booking always
+# re-verifies the offer before taking money, so a stale hit cannot mispay.
+SEARCH_CACHE_TTL_SECONDS = 180
 
 # Commands are intentionally frozen to the documented contract.
 _SEARCH_CMD = (
@@ -56,10 +76,13 @@ class AtlasError(RuntimeError):
     the operator for diagnostics but never used for branching.
     """
 
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, retryable: bool = False) -> None:
         super().__init__(f"{code}: {message}")
         self.code = code
         self.message = message
+        # Mirrors the envelope's `retryable` flag: True means the call already
+        # exhausted its retries, so the caller should degrade rather than loop.
+        self.retryable = retryable
 
 
 @dataclass
@@ -213,20 +236,35 @@ class AtlasClient:
             )
         return result.stdout
 
-    def _run_json(self, args: list[str]) -> dict[str, Any]:
-        out = self._run_raw(args)
-        try:
-            envelope = json.loads(out)
-        except json.JSONDecodeError as exc:
-            raise AtlasUnavailable(f"atlas-flight returned non-JSON output: {out[:200]!r}") from exc
+    def _run_json(self, args: list[str], *, retries: int = DEFAULT_RETRIES) -> dict[str, Any]:
+        """Run a command and return its success envelope.
 
-        if not isinstance(envelope, dict) or "code" not in envelope:
-            raise AtlasUnavailable(f"atlas-flight response missing 'code': {envelope!r}")
+        Retries only when Atlas flags the failure `retryable`. Callers that
+        mutate state (payment) must pass `retries=0`.
+        """
+        attempt = 0
+        while True:
+            out = self._run_raw(args)
+            try:
+                envelope = json.loads(out)
+            except json.JSONDecodeError as exc:
+                raise AtlasUnavailable(
+                    f"atlas-flight returned non-JSON output: {out[:200]!r}"
+                ) from exc
 
-        code = envelope.get("code", "")
-        if envelope.get("status") != "success":
-            raise AtlasError(code, envelope.get("message", "unknown error"))
-        return envelope
+            if not isinstance(envelope, dict) or "code" not in envelope:
+                raise AtlasUnavailable(f"atlas-flight response missing 'code': {envelope!r}")
+
+            if envelope.get("status") == "success":
+                return envelope
+
+            code = envelope.get("code", "")
+            retryable = bool(envelope.get("retryable"))
+            if retryable and attempt < retries:
+                time.sleep(RETRY_BACKOFF_SECONDS * (2**attempt))
+                attempt += 1
+                continue
+            raise AtlasError(code, envelope.get("message", "unknown error"), retryable)
 
     # -- public API ---------------------------------------------------------
 
@@ -363,11 +401,15 @@ class AtlasClient:
           - TICKETING_PENDING: processing continues.
           - PAYMENT_BALANCE_CHECK_REQUIRED: insufficient balance.
         """
-        return self._run_json([
-            "order", "pay",
-            "--confirmation-id", payment_confirmation_id,
-            "--json",
-        ])
+        # Never retried: a repeated pay call risks double-charging the customer.
+        return self._run_json(
+            [
+                "order", "pay",
+                "--confirmation-id", payment_confirmation_id,
+                "--json",
+            ],
+            retries=0,
+        )
 
     def order_status(self, order_no: str) -> dict[str, Any]:
         """Query order/ticketing status."""
@@ -400,13 +442,24 @@ class AtlasClient:
         destination: str,
         depart: datetime,
         adults: int = 1,
+        use_cache: bool = True,
     ) -> list[AtlasOffer]:
         """Run one search and return normalised offers (may be empty).
+
+        Results are cached for `SEARCH_CACHE_TTL_SECONDS` because connection
+        building re-searches the same hub legs; pass `use_cache=False` for a
+        guaranteed-fresh read.
 
         Raises `AtlasError` if the CLI returned a non-success code (e.g.
         AUTHORIZATION_REQUIRED). Raises `AtlasUnavailable` if the CLI itself
         could not be executed.
         """
+        key = (origin.upper(), destination.upper(), depart.strftime("%Y-%m-%d"), adults)
+        if use_cache:
+            cached = _cache_get(key)
+            if cached is not None:
+                return cached
+
         envelope = self._run_json(
             [
                 "search",
@@ -419,13 +472,15 @@ class AtlasClient:
                 "--adults",
                 str(adults),
                 "--json",
-            ]
+            ],
+            retries=SEARCH_RETRIES,
         )
 
         data = envelope.get("data", {}) or {}
         search_id = data.get("search_id", "")
         raw_offers = data.get("offers", []) or []
         if data.get("offer_count") and not raw_offers:
+            _cache_put(key, [])
             return []
 
         results: list[AtlasOffer] = []
@@ -480,7 +535,36 @@ class AtlasClient:
                     segments=parsed_segments,
                 )
             )
+        _cache_put(key, results)
         return results
+
+
+_CacheKey = tuple[str, str, str, int]
+_search_cache: dict[_CacheKey, tuple[float, list[AtlasOffer]]] = {}
+_search_cache_lock = threading.Lock()
+
+
+def _cache_get(key: _CacheKey) -> list[AtlasOffer] | None:
+    with _search_cache_lock:
+        entry = _search_cache.get(key)
+        if entry is None:
+            return None
+        stored_at, offers = entry
+        if time.monotonic() - stored_at > SEARCH_CACHE_TTL_SECONDS:
+            del _search_cache[key]
+            return None
+        return list(offers)
+
+
+def _cache_put(key: _CacheKey, offers: list[AtlasOffer]) -> None:
+    with _search_cache_lock:
+        _search_cache[key] = (time.monotonic(), list(offers))
+
+
+def clear_search_cache() -> None:
+    """Drop every cached search result (used by tests and manual refreshes)."""
+    with _search_cache_lock:
+        _search_cache.clear()
 
 
 def _parse_compact_dt(value: str) -> datetime:

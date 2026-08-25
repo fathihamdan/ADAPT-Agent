@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchAirports, searchPassengerRoutes } from '../api'
+import { AirportCombobox } from './ui/AirportCombobox'
 import { ChatBubble } from './ui/ChatBubble'
 import type { AirportInfo, PassengerRouteOption, PassengerRouteSearchResult } from '../types'
 
@@ -13,6 +14,15 @@ function formatDuration(minutes: number) {
   const h = Math.floor(minutes / 60)
   const m = minutes % 60
   return h ? `${h}h ${String(m).padStart(2, '0')}m` : `${m}m`
+}
+
+/** 'Direct', '1 stop via BLR', '2 stops via BLR, DXB'. */
+function describeStops(option: PassengerRouteOption) {
+  if (option.connections === 0) return 'Direct'
+  const label = `${option.connections} stop${option.connections === 1 ? '' : 's'}`
+  return option.layover_airports.length
+    ? `${label} via ${option.layover_airports.join(', ')}`
+    : label
 }
 
 const FIELD_LABEL = 'font-mono'
@@ -53,7 +63,7 @@ export default function PassengerSearch() {
       .catch(err => setAirportsError(String(err)))
   }, [])
 
-  const sameAirport = origin === destination
+  const sameAirport = origin !== '' && origin === destination
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -89,30 +99,6 @@ export default function PassengerSearch() {
     setResult(null)
     setSelected(null)
     setError(null)
-  }
-
-  function airportSelect(
-    label: string,
-    value: string,
-    onChange: (code: string) => void,
-  ) {
-    return (
-      <label className="flex flex-col gap-1" style={{ flex: 1 }}>
-        <span className={FIELD_LABEL} style={fieldLabelStyle}>{label}</span>
-        <select
-          value={value}
-          onChange={event => onChange(event.target.value)}
-          className="font-body"
-          style={{ ...inputStyle, cursor: 'pointer' }}
-        >
-          {airports.map(a => (
-            <option key={a.code} value={a.code}>
-              {a.code} — {a.city} ({a.name})
-            </option>
-          ))}
-        </select>
-      </label>
-    )
   }
 
   return (
@@ -151,7 +137,13 @@ export default function PassengerSearch() {
           </label>
 
           <div className="flex items-end gap-2 flex-wrap">
-            {airportSelect('Origin airport', origin, setOrigin)}
+            <AirportCombobox
+              id="origin-airport"
+              label="Origin airport"
+              airports={airports}
+              value={origin}
+              onChange={setOrigin}
+            />
             <button
               type="button"
               onClick={swapAirports}
@@ -165,7 +157,13 @@ export default function PassengerSearch() {
             >
               ⇄
             </button>
-            {airportSelect('Destination airport', destination, setDestination)}
+            <AirportCombobox
+              id="destination-airport"
+              label="Destination airport"
+              airports={airports}
+              value={destination}
+              onChange={setDestination}
+            />
           </div>
 
           {sameAirport && (
@@ -190,15 +188,15 @@ export default function PassengerSearch() {
         <div className="mt-5 flex items-center gap-3 flex-wrap">
           <button
             type="submit"
-            disabled={loading || airports.length === 0 || sameAirport}
+            disabled={loading || airports.length === 0 || !origin || !destination || sameAirport}
             className="font-body font-semibold"
             style={{
               padding: '10px 17px', border: 0, borderRadius: 999, background: '#2F8FE0', color: '#fff',
-              cursor: loading || airports.length === 0 || sameAirport ? 'default' : 'pointer',
-              opacity: loading || airports.length === 0 || sameAirport ? 0.65 : 1,
+              cursor: loading || airports.length === 0 || !origin || !destination || sameAirport ? 'default' : 'pointer',
+              opacity: loading || airports.length === 0 || !origin || !destination || sameAirport ? 0.65 : 1,
             }}
           >
-            {loading ? 'Finding routes…' : 'Find 3 best routes →'}
+            {loading ? 'Finding routes…' : 'Find best routes →'}
           </button>
           <span className="font-body" style={{ fontSize: 11, color: '#8A9BB5' }}>
             No booking is made until you choose an option.
@@ -287,13 +285,35 @@ export default function PassengerSearch() {
                     >
                       {option.source}
                     </span>
+                    {option.self_transfer && (
+                      <span
+                        className="font-mono"
+                        style={{
+                          fontSize: 9, borderRadius: 999, padding: '3px 7px', textTransform: 'uppercase',
+                          color: '#B0730A', background: 'rgba(212,135,10,0.12)',
+                        }}
+                      >
+                        {option.ticket_count} tickets · self-transfer
+                      </span>
+                    )}
+                    {option.destination_mismatch && (
+                      <span
+                        className="font-mono"
+                        style={{
+                          fontSize: 9, borderRadius: 999, padding: '3px 7px', textTransform: 'uppercase',
+                          color: '#C0392B', background: 'rgba(192,57,43,0.09)',
+                        }}
+                      >
+                        Lands at {option.arrives_at}
+                      </span>
+                    )}
                   </div>
                   <div className="text-right">
                     <div className="font-mono font-bold" style={{ fontSize: 15, color: '#1B2A41' }}>
                       {formatDuration(option.duration_minutes)}
                     </div>
                     <div className="font-mono" style={{ fontSize: 10, color: '#8A9BB5' }}>
-                      {option.connections === 0 ? 'Direct' : `${option.connections} stop`}
+                      {describeStops(option)}
                     </div>
                   </div>
                 </div>
@@ -301,21 +321,41 @@ export default function PassengerSearch() {
                 <div className="mt-3 flex flex-col gap-1">
                   {option.legs.map((leg, legIndex) => (
                     <div key={`${leg.flight_no}-${legIndex}`}>
-                      {legIndex > 0 && option.layover_minutes !== null && (
-                        <div className="font-mono" style={{ fontSize: 10, color: '#D4870A', padding: '3px 0 3px 8px' }}>
-                          ⏱ {formatDuration(option.layover_minutes)} layover in {option.legs[legIndex - 1].destination}
-                        </div>
-                      )}
                       <div className="font-body" style={{ fontSize: 12, color: '#5B6B84' }}>
                         <span className="font-mono font-bold" style={{ color: '#1B2A41' }}>{leg.flight_no}</span>
                         {' '}{leg.airline} · {leg.origin} {leg.departs} → {leg.destination} {leg.arrives}
                       </div>
+                      {leg.layover_after_minutes !== null && (
+                        <div
+                          className="font-mono flex items-center gap-1 flex-wrap"
+                          style={{
+                            fontSize: 10, margin: '4px 0 4px 2px', padding: '4px 9px',
+                            borderRadius: 8, width: 'fit-content',
+                            color: leg.layover_tight ? '#C0392B' : '#B0730A',
+                            background: leg.layover_tight ? 'rgba(192,57,43,0.08)' : 'rgba(212,135,10,0.09)',
+                            border: `1px solid ${leg.layover_tight ? 'rgba(192,57,43,0.22)' : 'rgba(212,135,10,0.20)'}`,
+                          }}
+                        >
+                          <span>⏱ {formatDuration(leg.layover_after_minutes)} transit gap in {leg.destination}</span>
+                          {leg.layover_tight && (
+                            <span style={{ fontWeight: 700, textTransform: 'uppercase' }}>· tight</span>
+                          )}
+                          {leg.self_transfer_after && (
+                            <span style={{ fontWeight: 700, textTransform: 'uppercase' }}>
+                              · ticket change, not protected
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-4 font-mono" style={{ fontSize: 11, color: '#5B6B84' }}>
                   <span>{option.airlines}</span>
+                  {option.layover_minutes !== null && (
+                    <span>{formatDuration(option.layover_minutes)} total on the ground</span>
+                  )}
                   {option.price !== null && (
                     <span style={{ color: '#1A9B65', fontWeight: 700 }}>
                       {option.price.toFixed(2)} {option.currency}
@@ -357,11 +397,26 @@ export default function PassengerSearch() {
                 {selected.code} for {result.passenger_name}
               </h3>
               <p className="font-body" style={{ fontSize: 13, color: '#5B6B84', marginTop: 4 }}>
-                {result.origin} {selected.departs} → {result.destination} {selected.arrives} ·{' '}
-                {formatDuration(selected.duration_minutes)} · {selected.connections === 0 ? 'Direct' : `${selected.connections} stop`}
+                {result.origin} {selected.departs} → {selected.arrives_at} {selected.arrives} ·{' '}
+                {formatDuration(selected.duration_minutes)} · {describeStops(selected)}
+                {selected.layover_minutes !== null && ` · ${formatDuration(selected.layover_minutes)} on the ground`}
                 {selected.price !== null && ` · ${selected.price.toFixed(2)} ${selected.currency}`}
               </p>
               <p className="font-body" style={{ fontSize: 12, color: '#5B6B84', marginTop: 10, lineHeight: 1.6 }}>
+                {selected.self_transfer && (
+                  <span style={{ color: '#B0730A', fontWeight: 600 }}>
+                    Heads-up: this is {selected.ticket_count} separate tickets with a self-transfer in{' '}
+                    {selected.transfer_airport}. The passenger re-checks bags there, and if the first
+                    flight runs late no airline is obliged to re-accommodate them — ticketing it means
+                    {' '}{selected.ticket_count} separate Atlas orders.{' '}
+                  </span>
+                )}
+                {selected.destination_mismatch && (
+                  <span style={{ color: '#C0392B', fontWeight: 600 }}>
+                    Note: this itinerary lands at {selected.arrives_at}, not the requested{' '}
+                    {result.destination}. Confirm the passenger accepts that airport before booking.{' '}
+                  </span>
+                )}
                 No booking has been made and nothing was charged. The next step is the booking
                 workflow (Atlas verify → order → pay), which asks for explicit approval before
                 any money moves. Click another option above to change the selection.

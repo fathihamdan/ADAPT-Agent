@@ -16,40 +16,58 @@ from adapt.agents import connection_risk, disruption_explainer, orchestrator, re
 from adapt.agents.connection_risk import DEPLANE_BUFFER_MINUTES
 from adapt.agents.connections import find_connections
 from adapt.data import atlas_source, aviationstack_source
-from adapt.data.mock_data import AIRPORTS, find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
+from adapt.data.airports import WORLD_AIRPORTS, airport_city, is_valid_iata
+from adapt.data.mock_data import find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
 from adapt.llm import get_llm_client
 from adapt.models import Flight, Passenger, RerouteOption, RiskLevel
 
 
 def list_airports() -> list[dict[str, Any]]:
-    """Airport picker data for the passenger-search form (code + city + name)."""
+    """Airport picker data for the passenger-search form (code + city + name).
+
+    Serves the curated worldwide registry - Atlas live inventory covers
+    effectively every commercial airport, and the UI accepts any typed 3-letter
+    code on top of this list.
+    """
     return [
         {"code": a.code, "name": a.name, "city": a.city}
-        for a in sorted(AIRPORTS.values(), key=lambda a: a.city)
+        for a in sorted(WORLD_AIRPORTS.values(), key=lambda a: a.city)
     ]
 
 
-def _route_option_dict(option: RerouteOption, recommended: bool) -> dict[str, Any]:
+def _route_option_dict(
+    option: RerouteOption, recommended: bool, requested_destination: str
+) -> dict[str, Any]:
     """One ranked route option for the passenger-search result, with a per-leg
     breakdown so the UI can show exactly what it's proposing (not just a joined
     flight-number string).
+
+    Every transit gap is attached to the leg it follows, so a two-stop itinerary
+    reports both layovers instead of only the first one.
     """
     legs = option.replacement_legs
     first, last = legs[0], legs[-1]
     duration_minutes = round((option.new_arrival - first.sched_dep).total_seconds() / 60)
-    layover_minutes = (
-        round((legs[1].sched_dep - legs[0].sched_arr).total_seconds() / 60)
-        if len(legs) > 1
-        else None
-    )
+    gaps = rerouting.layover_gaps(legs)
+    handover = option.self_transfer_after_leg
     return {
         "code": " + ".join(leg.flight_no for leg in legs),
         "route": option.notes or f"{first.origin} \u2192 {last.destination}",
         "departs": first.sched_dep.strftime("%a %H:%M"),
         "arrives": option.new_arrival.strftime("%a %H:%M"),
         "duration_minutes": duration_minutes,
-        "layover_minutes": layover_minutes,
+        # Total time spent on the ground between flights (None for a nonstop).
+        "layover_minutes": sum(gaps) if gaps else None,
+        "layover_airports": [leg.destination for leg in legs[:-1]],
+        # A gap under the connection buffer is a real operational risk for the
+        # desk to see, so it is flagged rather than left for the reader to work out.
+        "tight_connection": any(gap < rerouting.MIN_CONNECTION_BUFFER_MINUTES for gap in gaps),
         "connections": option.connections,
+        # Atlas sometimes answers with a nearby metro airport (an ORD -> LAX search
+        # can return an itinerary terminating at ONT). Surfaced explicitly so the
+        # desk never books the wrong airport by accident.
+        "arrives_at": last.destination,
+        "destination_mismatch": last.destination != requested_destination,
         "airlines": ", ".join(dict.fromkeys(leg.airline for leg in legs)),
         "legs": [
             {
@@ -59,13 +77,30 @@ def _route_option_dict(option: RerouteOption, recommended: bool) -> dict[str, An
                 "destination": leg.destination,
                 "departs": leg.sched_dep.strftime("%a %H:%M"),
                 "arrives": leg.sched_arr.strftime("%a %H:%M"),
+                "layover_after_minutes": gaps[index] if index < len(gaps) else None,
+                "layover_tight": (
+                    gaps[index] < rerouting.MIN_CONNECTION_BUFFER_MINUTES
+                    if index < len(gaps)
+                    else False
+                ),
+                # True for the one gap where the passenger leaves the protection
+                # of their first ticket - the only stop where a delay strands them.
+                "self_transfer_after": handover is not None and index == handover,
             }
-            for leg in legs
+            for index, leg in enumerate(legs)
         ],
         "recommended": recommended,
         "source": "Atlas live inventory" if option.from_atlas else "mock schedule",
         "price": option.atlas_price,
         "currency": option.atlas_currency,
+        # Stitched from two independent Atlas offers because no through-fare
+        # exists. The desk must see this before quoting: a misconnect is the
+        # passenger's own cost, and ticketing it means one order per offer.
+        "self_transfer": option.self_transfer,
+        "ticket_count": len(option.atlas_offer_ids) or 1,
+        "transfer_airport": (
+            legs[handover].destination if handover is not None and handover < len(legs) else None
+        ),
     }
 
 
@@ -94,17 +129,15 @@ def search_passenger_routes(
     if departure.tzinfo is not None:
         departure = departure.astimezone().replace(tzinfo=None)
 
+    # Format-level validation only: Atlas live inventory covers effectively
+    # every commercial airport, so any valid IATA code is searchable even when
+    # it is not in the offline demo set. When Atlas is unavailable, codes the
+    # mock schedule doesn't know simply return an empty result with an
+    # explanatory note instead of an error.
+    if not is_valid_iata(origin) or not is_valid_iata(destination):
+        raise ValueError("Airport codes must be 3-letter IATA codes (e.g. KUL, NRT, LHR).")
+
     use_atlas = atlas_source.is_available()
-    if not use_atlas:
-        # With mock data the searchable universe is the airport table - fail fast
-        # with the list of valid codes instead of a silent empty result.
-        unknown = [code for code in (origin, destination) if get_airport(code) is None]
-        if unknown:
-            supported = ", ".join(sorted(AIRPORTS))
-            raise ValueError(
-                f"Airport '{unknown[0]}' is not in the schedule database. "
-                f"Available airports: {supported}."
-            )
 
     name = passenger_name.strip() or "the passenger"
     llm = get_llm_client()
@@ -127,7 +160,7 @@ def search_passenger_routes(
         "narrative": narrative,
         "narrative_html": _markdown_bold_to_html(narrative),
         "options": [
-            _route_option_dict(option, recommended=index == 0)
+            _route_option_dict(option, recommended=index == 0, requested_destination=destination)
             for index, option in enumerate(options)
         ],
     }
@@ -233,7 +266,7 @@ def refresh_queue() -> list[dict[str, Any]]:
 
 def _city(code: str) -> str:
     airport = get_airport(code)
-    return airport.city if airport else code
+    return airport.city if airport else airport_city(code)
 
 
 def _disruption_dict(flight: Flight, explanation: str) -> dict[str, Any]:
