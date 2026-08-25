@@ -13,6 +13,13 @@ interface Props {
 export default function FrameRerouting({ reroute, active, onNext }: Props) {
   const [visible, setVisible] = useState(false)
 
+  // Three distinct outcomes, not two. The middle one - a search that ran and came
+  // back empty - used to fall into the success branch and render "You're covered /
+  // Found you a better connection" above "0 alternatives found", which tells an
+  // ops desk the opposite of the truth about a passenger who still needs help.
+  const hasOptions = !!reroute && reroute.options.length > 0
+  const searchedAndEmpty = !!reroute && reroute.options.length === 0
+
   useEffect(() => {
     if (!active) { setVisible(false); return }
     const t = setTimeout(() => setVisible(true), 60)
@@ -31,12 +38,12 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
       <div>
         <p
           className="font-mono text-xs font-bold uppercase tracking-widest mb-2"
-          style={{ color: '#2ECC87' }}
+          style={{ color: searchedAndEmpty ? '#C2410C' : '#2ECC87' }}
         >
-          ✅ You&apos;re covered
+          {searchedAndEmpty ? '⚠ No cover found' : '✅ You’re covered'}
         </p>
 
-        {reroute ? (
+        {hasOptions && reroute ? (
           <>
             <h1
               className="font-display font-bold leading-tight mb-1"
@@ -47,7 +54,7 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
             </h1>
 
             <p className="font-body text-sm mb-5" style={{ color: '#5B6B84' }}>
-              {reroute.options.length} alternative{reroute.options.length !== 1 ? 's' : ''} found. Here&apos;s what I found.
+              {reroute.options.length} alternative{reroute.options.length !== 1 ? 's' : ''} found, best first.
             </p>
 
             {/* Option cards */}
@@ -74,6 +81,29 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
               </p>
             </ChatBubble>
           </>
+        ) : searchedAndEmpty && reroute ? (
+          <>
+            <h1
+              className="font-display font-bold leading-tight mb-1"
+              style={{ fontSize: 27, color: '#1B2A41' }}
+            >
+              No alternatives{' '}
+              <span style={{ color: '#C2410C' }}>available.</span>
+            </h1>
+
+            <p className="font-body text-sm mb-5" style={{ color: '#5B6B84' }}>
+              This passenger still needs help — the search found nothing to rebook them onto.
+            </p>
+
+            {/* The narrative is the only thing that says *why* the search came back
+                empty (no inventory, no through-fare, an upstream API error), so it
+                is the most important element on the screen in this state. */}
+            <ChatBubble variant="ai">
+              <p className="font-body text-sm leading-relaxed" style={{ color: '#1B2A41' }}>
+                🤖 {reroute.narrative}
+              </p>
+            </ChatBubble>
+          </>
         ) : (
           <>
             <h1
@@ -90,8 +120,12 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
       </div>
 
       <div className="mt-6">
-        <PrimaryButton onClick={onNext} variant="leaf" icon="✓">
-          {reroute ? 'Confirm my new flight' : 'Back to start'}
+        <PrimaryButton
+          onClick={onNext}
+          variant={searchedAndEmpty ? 'coral' : 'leaf'}
+          icon={searchedAndEmpty ? '↩' : '✓'}
+        >
+          {hasOptions ? 'Confirm my new flight' : 'Back to start'}
         </PrimaryButton>
       </div>
     </div>

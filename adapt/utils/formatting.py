@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from adapt.models import BookingResult, BookingStage, ConnectionRisk, Flight, Itinerary, RerouteOption, RiskLevel
+from adapt.models import BookingResult, BookingStage, ConnectionRisk, Flight, RerouteOption, RiskLevel
 
 console = Console()
 

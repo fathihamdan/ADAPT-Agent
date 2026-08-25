@@ -15,7 +15,7 @@ from typing import Any
 from adapt.agents import connection_risk, disruption_explainer, orchestrator, rerouting
 from adapt.agents.connection_risk import DEPLANE_BUFFER_MINUTES
 from adapt.agents.connections import find_connections
-from adapt.data import atlas_source, aviationstack_source
+from adapt.data import atlas_source, aviationstack_source, flight_store
 from adapt.data.airports import WORLD_AIRPORTS, airport_city, is_valid_iata
 from adapt.data.mock_data import find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
 from adapt.llm import get_llm_client
@@ -200,17 +200,51 @@ def _flight_dict(f: Flight, source: str) -> dict[str, Any]:
     }
 
 
-def list_flights(limit: int = 25) -> list[dict[str, Any]]:
-    """Real flights AviationStack is tracking right now, when configured. Falls
-    back to the mock schedule (same data as `adapt flights` on the CLI) only if
-    AviationStack isn't set up or the live call comes back empty.
+def list_flights(
+    limit: int = 200,
+    origin: str | None = None,
+    destination: str | None = None,
+    disrupted: bool = False,
+) -> list[dict[str, Any]]:
+    """Real flights, preferring the locally harvested database.
+
+    Order is local DB -> live API -> mock schedule. The local DB wins because it
+    costs no quota and is usually much larger than a single 100-row live page;
+    `adapt harvest` is what fills it. Falls through to the live API only when
+    nothing has been harvested yet.
+
+    The filters apply to the local DB only - the live and mock paths have no
+    equivalent server-side filtering, and silently ignoring a filter would be
+    worse than not offering one.
     """
+    harvested = flight_store.load(
+        limit=limit, origin=origin, destination=destination, disrupted_only=disrupted
+    )
+    if harvested:
+        age = flight_store.stats().get("harvested_age_seconds") or 0.0
+        return [
+            _flight_dict(f, f"local flight DB (harvested {age / 3600:.1f}h ago)")
+            for f in harvested
+        ]
+
     if aviationstack_source.is_available():
         live = aviationstack_source.list_live_flights(limit=limit)
         if live:
-            return [_flight_dict(f, "AviationStack (live)") for f in live]
+            # Cached rows must never be labelled "live" - an ops desk acting on a
+            # day-old delay is worse off than one that knows the feed is stale.
+            age = aviationstack_source.last_age_seconds()
+            source = (
+                "AviationStack (live)"
+                if age < 60
+                else f"AviationStack (cached, {age / 60:.0f}min old)"
+            )
+            return [_flight_dict(f, source) for f in live]
+        # Carry the reason into the source label rather than handing back mock rows
+        # that look indistinguishable from a working live feed.
+        reason = aviationstack_source.last_error() or "no live data"
+        return [_flight_dict(f, f"mock schedule - live unavailable: {reason}") for f in get_flight_db()]
 
-    return [_flight_dict(f, "mock schedule") for f in get_flight_db()]
+    return [_flight_dict(f, "mock schedule - AVIATIONSTACK_API_KEY not set") for f in get_flight_db()]
 
 
 def _queue_row(passenger: Passenger) -> dict[str, Any] | None:

@@ -67,8 +67,25 @@ def api_status() -> dict:
 
 
 @app.get("/api/flights")
-def api_list_flights() -> list[dict]:
-    return service.list_flights()
+def api_list_flights(
+    limit: int = 200,
+    origin: str | None = None,
+    destination: str | None = None,
+    disrupted: bool = False,
+) -> list[dict]:
+    """Flights for the Flights table, newest departure first.
+
+    Served from the locally harvested database when it has data (free, and
+    typically hundreds of rows), otherwise the live API, otherwise mock. The
+    default limit is well above the old 25 because the local DB is the normal
+    source now and a 400-row table is the point of harvesting.
+    """
+    return service.list_flights(
+        limit=max(1, min(limit, 2000)),
+        origin=origin,
+        destination=destination,
+        disrupted=disrupted,
+    )
 
 
 @app.get("/api/queue")

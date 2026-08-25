@@ -27,6 +27,7 @@ the user sees *why* they got mock results.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -75,6 +76,33 @@ def layover_gaps(legs: list[Flight]) -> list[int]:
 # ---------------------------------------------------------------------------
 
 
+def _shift_daily_schedule(flights: list[Flight], not_before: datetime) -> list[Flight]:
+    """Re-anchor the repeating part of the mock schedule onto the searched date.
+
+    Mock flight times are offsets from the day the process started, so a search
+    for any other date used to match nothing at all - the demo silently worked
+    only on the server's start day, and the UI blamed the *time* of day for it.
+    Those flights represent a daily-repeating timetable, so shift them whole days
+    onto the requested date, preserving every authored gap (delays, layovers).
+
+    Flights carrying an absolute date (the JFK -> NRT -> KIX pair on 2026-09-04)
+    are deliberately left alone: they model one specific dated itinerary, not a
+    daily service, and moving them would break the route the UI advertises.
+    """
+    if not flights:
+        return flights
+    anchor = min(f.sched_dep for f in flights).date()
+    delta = timedelta(days=(not_before.date() - anchor).days)
+    if not delta:
+        return flights
+    return [
+        replace(f, sched_dep=f.sched_dep + delta, sched_arr=f.sched_arr + delta)
+        if f.sched_dep.date() == anchor
+        else f
+        for f in flights
+    ]
+
+
 def _find_mock_options(
     origin: str,
     destination: str,
@@ -85,6 +113,7 @@ def _find_mock_options(
     db = [f for f in get_flight_db() if f.status.value != "CANCELLED"]
     if exclude_flight_no:
         db = [f for f in db if f.flight_no != exclude_flight_no]
+    db = _shift_daily_schedule(db, not_before)
 
     options: list[RerouteOption] = []
 
@@ -340,13 +369,15 @@ def _find_atlas_self_transfer(
 
     Runs in two parallel phases (origin -> hub, then hub -> destination) because
     the second phase's dates depend on when the first legs actually land. Returns
-    (options, note); an empty list means no hub produced a valid pairing.
+    (options, note); an empty list means no hub produced a valid pairing, and the
+    note says which phase came up empty - "no through-fare" alone is not a useful
+    answer when a two-phase hub search ran silently behind it.
     """
     from adapt.atlas import AtlasError, AtlasUnavailable
 
     hubs = hubs_for(origin, destination, limit=MAX_HUB_CANDIDATES)
     if not hubs:
-        return [], None
+        return [], f"no connecting hubs known for {origin} -> {destination}"
 
     def search(route: tuple[str, str, datetime]) -> list:
         leg_origin, leg_destination, depart = route
@@ -393,7 +424,10 @@ def _find_atlas_self_transfer(
                 )
 
     if not onward_routes:
-        return [], None
+        # Phase 1 found nothing, so phase 2 never ran. Name the legs that came up
+        # empty: the ops desk needs to know Atlas has no origin-side inventory,
+        # not just that the city pair has no through-fare.
+        return [], f"no Atlas inventory on {origin} -> {'/'.join(hubs)}"
 
     ordered_routes = sorted(onward_routes, key=lambda r: (r[0], r[2]))
     with ThreadPoolExecutor(max_workers=len(ordered_routes)) as pool:
@@ -415,7 +449,12 @@ def _find_atlas_self_transfer(
                 options.append(_stitch(first, second, transfer_at, original_arrival))
 
     if not options:
-        return [], None
+        # Both phases returned legs, but no pair sat inside the self-transfer
+        # window - a different failure from having no inventory at all.
+        return [], (
+            f"legs exist via {'/'.join(sorted(inbound))} but no pair connects within "
+            f"{SELF_TRANSFER_MIN_MINUTES}-{SELF_TRANSFER_MAX_MINUTES} min"
+        )
 
     options.sort(key=lambda o: (o.new_arrival, o.connections, o.atlas_price or 0.0))
     return (
@@ -470,6 +509,11 @@ def find_options(
                 if stitched:
                     options.extend(stitched)
                     atlas_note = stitched_reason
+                elif stitched_reason:
+                    # The hub search ran and failed. Keep both halves of the story:
+                    # no through-fare *and* why the self-transfer fallback couldn't
+                    # rescue it, so the note explains the empty result on its own.
+                    atlas_note = f"{atlas_note}; {stitched_reason}" if atlas_note else stitched_reason
 
     mock_options = _find_mock_options(origin, destination, not_before, original_arrival, exclude_flight_no)
 

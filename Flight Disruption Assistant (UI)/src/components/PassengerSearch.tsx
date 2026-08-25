@@ -378,9 +378,10 @@ export default function PassengerSearch() {
             <div className="font-body" style={{ background: '#fff', borderRadius: 16, padding: 20, color: '#5B6B84', fontSize: 13, lineHeight: 1.6 }}>
               <p>{result.narrative}</p>
               <p style={{ marginTop: 8 }}>
-                Try an earlier departure time. With the mock schedule, covered routes include
-                DFW → ATL (direct), ORD → LAX (via DEN) and JFK → KIX (via NRT, Sep 4 2026);
-                other pairs need live Atlas inventory.
+                The demo schedule covers DFW → ATL (direct) and ORD → LAX (via DEN) on any
+                date, plus JFK → KIX (via NRT) on Sep 4 2026. Every other city pair needs
+                live Atlas inventory, which does not cover all routes — the note above says
+                exactly what Atlas returned for this search.
               </p>
             </div>
           )}

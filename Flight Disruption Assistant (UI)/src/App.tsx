@@ -57,6 +57,7 @@ export default function App() {
 
   const [flights, setFlights] = useState<FlightRecord[]>([])
   const [flightsError, setFlightsError] = useState<string | null>(null)
+  const [disruptedOnly, setDisruptedOnly] = useState(false)
   const [sortKey, setSortKey] = useState<FlightSortKey>('sched_dep')
   const [sortDir, setSortDir] = useState<1 | -1>(1)
 
@@ -161,12 +162,16 @@ export default function App() {
     refreshStatus()
   }, [refreshStatus])
 
-  // Load the full mock flight database once, for the Flights table.
+  // Load the flight table - the locally harvested database when it has data,
+  // which is hundreds of real flights rather than the old 25-row live page.
+  // Refetches when the disrupted filter changes, since that filter is applied
+  // server-side against the whole database, not just the rows already loaded.
   useEffect(() => {
-    fetchFlights()
+    setFlightsError(null)
+    fetchFlights({ disrupted: disruptedOnly })
       .then(setFlights)
       .catch(err => setFlightsError(String(err)))
-  }, [])
+  }, [disruptedOnly])
 
   const toggleSort = useCallback((key: FlightSortKey) => {
     setSortKey(prevKey => {
@@ -594,14 +599,30 @@ export default function App() {
             borderRadius: 20, padding: '18px 22px',
           }}
         >
-          <div className="mb-3">
-            <h3 className="font-display font-bold" style={{ fontSize: 16, color: '#1B2A41' }}>Flights</h3>
-            <p className="font-body" style={{ fontSize: 12, color: '#5B6B84' }}>
-              {flights[0]?.source === 'AviationStack (live)'
-                ? 'Real flights AviationStack is tracking right now'
-                : 'ADAPT mock schedule (live tracking unavailable)'}
-              {' · '}click a column to sort
-            </p>
+          <div className="mb-3 flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h3 className="font-display font-bold" style={{ fontSize: 16, color: '#1B2A41' }}>Flights</h3>
+              {/* Report whatever the backend actually served rather than guessing
+                  from a hardcoded string - the source can be the local harvested
+                  DB, the live API, a cached response, or mock data. */}
+              <p className="font-body" style={{ fontSize: 12, color: '#5B6B84' }}>
+                {flights.length} flight{flights.length === 1 ? '' : 's'}
+                {flights[0]?.source ? ` · ${flights[0].source}` : ''}
+                {' · '}click a column to sort
+              </p>
+            </div>
+            <button
+              onClick={() => setDisruptedOnly(v => !v)}
+              className="font-body font-semibold"
+              style={{
+                fontSize: 12, borderRadius: 999, padding: '6px 14px', cursor: 'pointer',
+                color: disruptedOnly ? '#C2410C' : '#5B6B84',
+                background: disruptedOnly ? 'rgba(255,107,74,0.12)' : 'rgba(255,255,255,0.7)',
+                border: disruptedOnly ? '1px solid rgba(255,107,74,0.35)' : '1px solid rgba(47,143,224,0.18)',
+              }}
+            >
+              {disruptedOnly ? '● Disrupted only' : '○ Disrupted only'}
+            </button>
           </div>
 
           {flightsError && (

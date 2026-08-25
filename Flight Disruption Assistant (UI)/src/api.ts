@@ -18,8 +18,16 @@ export async function fetchSystemStatus(): Promise<SystemStatus> {
   return res.json()
 }
 
-export async function fetchFlights(): Promise<FlightRecord[]> {
-  const res = await fetch('/api/flights')
+export async function fetchFlights(options: {
+  limit?: number
+  disrupted?: boolean
+} = {}): Promise<FlightRecord[]> {
+  // The locally harvested database holds hundreds of real flights, so ask for a
+  // whole table rather than the handful a single live API page used to return.
+  const params = new URLSearchParams({ limit: String(options.limit ?? 500) })
+  if (options.disrupted) params.set('disrupted', 'true')
+
+  const res = await fetch(`/api/flights?${params}`)
   if (!res.ok) {
     throw new Error(await extractErrorDetail(res, `Failed to load flights (${res.status})`))
   }

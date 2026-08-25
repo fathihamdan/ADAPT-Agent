@@ -23,7 +23,7 @@ from adapt.atlas_tools import (
     select_seat,
     verify_offer,
 )
-from adapt.data import atlas_source, aviationstack_source
+from adapt.data import atlas_source, aviationstack_source, flight_store, http_cache
 from adapt.data.mock_data import find_flight, find_passenger, get_airport, get_flight_db, get_passengers
 from adapt.llm import get_llm_client
 from adapt.utils import formatting as fmt
@@ -593,9 +593,153 @@ def book(
 
 
 @app.command()
-def flights() -> None:
-    """List all flights in the mock schedule."""
-    fmt.print_flight_table(get_flight_db())
+def harvest(
+    pages: int = typer.Option(5, "--pages", help="Pages to fetch. Each page = 1 API call, <=100 flights."),
+    page_size: int = typer.Option(100, "--page-size", help="Flights per page (free plan caps at 100)."),
+) -> None:
+    """Pull real flights from AviationStack into the local database.
+
+    Each page costs one API call from a ~100-call monthly quota and returns up to
+    100 flights, so `--pages 10` buys roughly 1,000 real flights for a tenth of
+    the month's budget. Harvested flights are permanent - query them afterwards
+    with `adapt flights` at no further API cost.
+    """
+    if not aviationstack_source.is_available():
+        fmt.console.print("[red]AVIATIONSTACK_API_KEY is not set - nothing to harvest.[/red]")
+        raise typer.Exit(1)
+
+    fmt.console.print(f"Harvesting up to {pages} page(s) x {page_size} flights...")
+
+    def progress(page: int, added: int, running_total: int) -> None:
+        fmt.console.print(f"  page {page}: +{added} flights (stored {running_total} so far)")
+
+    result = aviationstack_source.harvest(pages=pages, page_size=page_size, on_page=progress)
+
+    fmt.console.print(
+        f"\n[green]Stored {result['stored']} flights[/green] using "
+        f"{result['api_calls']} API call(s). Local DB now holds {result['total_in_db']} flights."
+    )
+    if result["error"]:
+        fmt.console.print(f"[yellow]Stopped early: {result['error']}[/yellow]")
+
+
+@app.command()
+def db_status() -> None:
+    """Show what's in the local harvested flight database."""
+    info = flight_store.stats()
+    fmt.console.print(f"Database  : {info['path']}")
+    if not info["exists"] or not info["flights"]:
+        fmt.console.print("[yellow]Empty. Populate it with:  adapt harvest --pages 5[/yellow]")
+        return
+
+    fmt.console.print(f"Flights   : {info['flights']}  ({info['size_bytes'] / 1024:.0f} KB)")
+    fmt.console.print(f"Routes    : {info['routes']} distinct, {info['airports']} airports")
+    fmt.console.print(f"Disrupted : {info['disrupted']}")
+    if info["harvested_age_seconds"] is not None:
+        fmt.console.print(f"Last pull : {info['harvested_age_seconds'] / 3600:.1f}h ago")
+    for status, n in sorted(info["by_status"].items(), key=lambda kv: -kv[1]):
+        fmt.console.print(f"  {status}: {n}")
+
+
+@app.command()
+def db_clear() -> None:
+    """Delete every harvested flight. This data cost API quota - it is not recoverable for free."""
+    removed = flight_store.clear()
+    fmt.console.print(f"Removed {removed} harvested flight(s) from the local DB.")
+
+
+@app.command()
+def cache_status() -> None:
+    """Show what's in the local API cache (the store that saves live-API quota)."""
+    info = http_cache.stats()
+    fmt.console.print(f"Cache file : {info['path']}")
+    if not info["exists"] or not info["entries"]:
+        fmt.console.print("[yellow]Empty - every lookup will spend a live API call.[/yellow]")
+        return
+
+    fmt.console.print(f"Entries    : {info['entries']}  ({info['size_bytes'] / 1024:.1f} KB)")
+    fmt.console.print(f"TTL        : {info['ttl_seconds'] / 3600:.1f}h")
+    fmt.console.print(f"Offline    : {'ON - no live calls will be made' if info['offline'] else 'off'}")
+    for source, detail in sorted(info["sources"].items()):
+        fmt.console.print(
+            f"  {source}: {detail['entries']} entries, "
+            f"newest {detail['newest_age_seconds'] / 60:.0f}min old, "
+            f"oldest {detail['oldest_age_seconds'] / 3600:.1f}h old"
+        )
+
+
+@app.command()
+def cache_clear(
+    source: str = typer.Option(None, "--source", help="Clear one source only, e.g. aviationstack."),
+) -> None:
+    """Delete cached API responses, forcing the next lookup to spend a live call."""
+    removed = http_cache.clear(source)
+    scope = source or "all sources"
+    fmt.console.print(f"Removed {removed} cached entr{'y' if removed == 1 else 'ies'} ({scope}).")
+
+
+@app.command()
+def flights(
+    source: str = typer.Option(
+        "auto",
+        "--source",
+        help="auto (local DB, then live, then mock) | local | live | mock.",
+    ),
+    limit: int = typer.Option(25, "--limit", help="How many flights to show."),
+    origin: str = typer.Option(None, "--origin", help="Filter by origin airport (local DB only)."),
+    destination: str = typer.Option(
+        None, "--destination", help="Filter by destination airport (local DB only)."
+    ),
+    disrupted: bool = typer.Option(
+        False, "--disrupted", help="Only delayed/cancelled/diverted flights (local DB only)."
+    ),
+) -> None:
+    """List flights from the local harvested database, the live API, or mock data."""
+    source = source.lower()
+    if source not in {"auto", "local", "live", "mock"}:
+        fmt.console.print(f"[red]Unknown --source '{source}'. Use auto, local, live or mock.[/red]")
+        raise typer.Exit(1)
+
+    # Local first under `auto`: it is free, already paid for, and usually far
+    # larger than a single 100-row live page.
+    if source in {"auto", "local"}:
+        rows = flight_store.load(
+            limit=limit, origin=origin, destination=destination, disrupted_only=disrupted
+        )
+        if rows:
+            total = flight_store.count()
+            fmt.print_flight_table(
+                rows, title=f"Local flight DB - showing {len(rows)} of {total} harvested"
+            )
+            return
+        if source == "local":
+            fmt.console.print(
+                "[yellow]Local flight DB is empty. Populate it with:  adapt harvest --pages 5[/yellow]"
+            )
+            return
+
+    if source == "mock":
+        fmt.print_flight_table(get_flight_db(), title="Mock schedule (offline demo data)")
+        return
+
+    live = source in {"auto", "live"}
+    if live and aviationstack_source.is_available():
+        rows = aviationstack_source.list_live_flights(limit=limit)
+        if rows:
+            age = aviationstack_source.last_age_seconds()
+            freshness = "live" if age < 60 else f"cached, {age / 60:.0f}min old"
+            fmt.print_flight_table(
+                rows, title=f"AviationStack flights - {freshness} ({len(rows)})"
+            )
+            if aviationstack_source.last_error():
+                fmt.console.print(f"[yellow]{aviationstack_source.last_error()}[/yellow]")
+            return
+        # Say *why* before falling back. A silent swap to mock rows is how a dead
+        # API key or an exhausted quota goes unnoticed for weeks.
+        fmt.console.print(
+            f"[yellow]Live flight data unavailable: {aviationstack_source.last_error()}.[/yellow]"
+        )
+    fmt.print_flight_table(get_flight_db(), title="Mock schedule (offline demo data)")
 
 
 @app.command()
