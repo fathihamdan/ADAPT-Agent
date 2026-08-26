@@ -1,4 +1,4 @@
-"""Builds the JSON payload the GateWatch UI consumes, from real ADAPT agent output.
+"""Builds the JSON payload the ADAPT UI consumes, from real ADAPT agent output.
 
 One function, one job: turn orchestrator.run() output into the shape the frontend
 expects. No fabricated data - any UI element with no real backing data (there is
@@ -15,7 +15,7 @@ from typing import Any
 from adapt.agents import connection_risk, disruption_explainer, orchestrator, rerouting
 from adapt.agents.connection_risk import DEPLANE_BUFFER_MINUTES
 from adapt.agents.connections import find_connections
-from adapt.data import atlas_source, aviationstack_source, flight_store
+from adapt.data import atlas_source, aviationstack_source, flight_store, reroute_store
 from adapt.data.airports import WORLD_AIRPORTS, airport_city, is_valid_iata
 from adapt.data.mock_data import find_passenger, get_airport, get_flight_db, get_passengers, refresh_passengers
 from adapt.llm import get_llm_client
@@ -281,7 +281,11 @@ def _queue_row(passenger: Passenger) -> dict[str, Any] | None:
 
 
 def _passenger_queue(passengers: dict[str, Passenger]) -> list[dict[str, Any]]:
-    rows = [_queue_row(p) for p in passengers.values()]
+    # Passengers already rebooked leave the triage queue. A queue that never
+    # shrinks stops being a work list - the desk cannot tell "not looked at yet"
+    # from "already solved", and a handled CRITICAL keeps re-claiming the top row.
+    handled = reroute_store.rerouted_ids()
+    rows = [_queue_row(p) for p in passengers.values() if p.passenger_id not in handled]
     queue = [r for r in rows if r is not None]
     queue.sort(key=lambda r: -r["risk_pct"])
     return queue
@@ -289,6 +293,63 @@ def _passenger_queue(passengers: dict[str, Passenger]) -> list[dict[str, Any]]:
 
 def list_passenger_queue() -> list[dict[str, Any]]:
     return _passenger_queue(get_passengers())
+
+
+def confirm_reroute(passenger_id: str, option: dict[str, Any]) -> dict[str, Any] | None:
+    """Move a passenger out of the queue and onto `option`. None if unknown id."""
+    passenger = find_passenger(passenger_id)
+    if passenger is None:
+        return None
+
+    # Capture what the risk *was*, so the rerouted view can show what the desk
+    # actually prevented rather than just listing names.
+    row = _queue_row(passenger)
+    reroute_store.mark_rerouted(
+        passenger_id=passenger.passenger_id,
+        passenger_name=passenger.name,
+        option=option,
+        original_risk=row["risk_level"] if row else None,
+        original_risk_pct=row["risk_pct"] if row else None,
+        connection_airport=row["connection_airport"] if row else None,
+    )
+    return {"passenger_id": passenger.passenger_id, "name": passenger.name}
+
+
+def list_rerouted_passengers() -> list[dict[str, Any]]:
+    return reroute_store.list_rerouted()
+
+
+def undo_reroute(passenger_id: str) -> bool:
+    """Return a passenger to the queue."""
+    return reroute_store.undo(passenger_id)
+
+
+def refresh_flight_database(pages: int = 3) -> dict[str, Any]:
+    """Pull the latest flights from AviationStack into the local database.
+
+    Deduplication is structural, not a post-pass: the store is keyed on
+    (flight_no, sched_dep), so re-harvesting a flight overwrites its own row.
+    Genuinely new flights are added, already-known ones have their status
+    refreshed, and neither case can produce a second row for the same flight.
+    """
+    if not aviationstack_source.is_available():
+        return {
+            "ok": False,
+            "error": "AVIATIONSTACK_API_KEY is not set - cannot fetch new flights.",
+            "added": 0,
+            "updated": 0,
+            "total": flight_store.count(),
+        }
+
+    result = aviationstack_source.harvest(pages=pages)
+    return {
+        "ok": result["added"] > 0 or result["updated"] > 0,
+        "error": result.get("error"),
+        "added": result["added"],
+        "updated": result["updated"],
+        "api_calls": result["api_calls"],
+        "total": result["total_in_db"],
+    }
 
 
 def refresh_queue() -> list[dict[str, Any]]:

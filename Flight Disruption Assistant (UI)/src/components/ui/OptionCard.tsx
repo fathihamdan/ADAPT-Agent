@@ -7,9 +7,15 @@ interface Props {
   delayVsOriginal: number
   best: boolean
   animationDelay?: number
+  /** Marks the card the confirm button will act on. */
+  selected?: boolean
+  onSelect?: () => void
 }
 
-export function OptionCard({ flight, route, departs, arrives, connections, delayVsOriginal, best, animationDelay = 0 }: Props) {
+export function OptionCard({
+  flight, route, departs, arrives, connections, delayVsOriginal, best,
+  animationDelay = 0, selected = false, onSelect,
+}: Props) {
   const badgeColor = delayVsOriginal <= 0 ? '#1A9B65' : delayVsOriginal <= 180 ? '#D4870A' : '#FF6B4A'
   const badgeBg = delayVsOriginal <= 0 ? '#DBF7EA' : delayVsOriginal <= 180 ? '#FFF1DA' : '#FFE3DB'
   const badgeLabel = `${delayVsOriginal >= 0 ? '+' : ''}${delayVsOriginal}m`
@@ -17,17 +23,26 @@ export function OptionCard({ flight, route, departs, arrives, connections, delay
 
   return (
     <div
+      onClick={onSelect}
+      role={onSelect ? 'button' : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onKeyDown={onSelect ? e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect() } } : undefined}
       style={{
         background: best ? 'linear-gradient(135deg, #F0FFF8 0%, #E8FAF3 100%)' : '#ffffff',
-        border: best ? '2px solid #2ECC87' : '1.5px solid #E8EEF6',
+        // Selection outranks "best pick" visually: the desk needs to see which
+        // option the confirm button will actually book, not which one we ranked.
+        border: selected
+          ? '2px solid #2F8FE0'
+          : best ? '2px solid #2ECC87' : '1.5px solid #E8EEF6',
         borderRadius: 20,
         padding: '14px 16px',
-        boxShadow: best
-          ? '0 6px 24px rgba(46,204,135,0.15)'
-          : '0 2px 10px rgba(27,42,65,0.05)',
+        boxShadow: selected
+          ? '0 6px 24px rgba(47,143,224,0.22)'
+          : best ? '0 6px 24px rgba(46,204,135,0.15)' : '0 2px 10px rgba(27,42,65,0.05)',
         display: 'flex',
         alignItems: 'center',
         gap: 12,
+        cursor: onSelect ? 'pointer' : undefined,
         animation: `slideUp 0.5s ease ${animationDelay}s forwards`,
         opacity: 0,
         animationFillMode: 'forwards',

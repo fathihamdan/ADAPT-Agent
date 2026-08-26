@@ -1,4 +1,7 @@
-import type { AirportInfo, FlightRecord, PassengerDetail, PassengerRouteSearchResult, QueueRow, SystemStatus } from './types'
+import type {
+  AirportInfo, FlightRecord, PassengerDetail, PassengerRouteSearchResult,
+  QueueRow, ReroutedPassenger, RerouteOption, FlightRefreshResult, SystemStatus,
+} from './types'
 
 async function extractErrorDetail(res: Response, fallback: string): Promise<string> {
   try {
@@ -30,6 +33,53 @@ export async function fetchFlights(options: {
   const res = await fetch(`/api/flights?${params}`)
   if (!res.ok) {
     throw new Error(await extractErrorDetail(res, `Failed to load flights (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function confirmReroute(
+  passengerId: string,
+  option: RerouteOption,
+): Promise<{ passenger_id: string; name: string }> {
+  const res = await fetch(`/api/queue/${passengerId}/reroute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      code: option.code,
+      route: option.route,
+      depart: option.depart,
+      arrival: option.arrival,
+      delay_vs_original: option.delay_vs_original,
+      connections: option.connections,
+    }),
+  })
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to confirm reroute (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function fetchReroutedPassengers(): Promise<ReroutedPassenger[]> {
+  const res = await fetch('/api/rerouted')
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to load rerouted passengers (${res.status})`))
+  }
+  return res.json()
+}
+
+export async function undoReroute(passengerId: string): Promise<void> {
+  const res = await fetch(`/api/rerouted/${passengerId}`, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to restore passenger (${res.status})`))
+  }
+}
+
+/** Pull the newest flights into the local database. Costs API quota, so this is
+ *  only ever triggered by an explicit button press. */
+export async function refreshFlightDatabase(pages = 3): Promise<FlightRefreshResult> {
+  const res = await fetch(`/api/flights/refresh?pages=${pages}`, { method: 'POST' })
+  if (!res.ok) {
+    throw new Error(await extractErrorDetail(res, `Failed to refresh flights (${res.status})`))
   }
   return res.json()
 }

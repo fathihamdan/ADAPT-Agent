@@ -58,11 +58,13 @@ export default function FrameRiskPredictor({ connection, active, onNext }: Props
       }}
     >
       <div>
+        {/* No connection to assess is informational, not a success - blue keeps it
+            from reading as "all clear" next to the genuinely green states. */}
         <p
           className="font-mono text-xs font-bold uppercase tracking-widest mb-2"
-          style={{ color: connection ? (severe ? '#FF6B4A' : '#FFB84C') : '#2ECC87' }}
+          style={{ color: connection ? (severe ? '#FF6B4A' : '#FFB84C') : '#1B6FC2' }}
         >
-          {connection ? '🏃 Tight connection ahead' : '✅ No connection to assess'}
+          {connection ? '🏃 Tight connection ahead' : 'ℹ No connection to assess'}
         </p>
 
         {connection ? (
@@ -117,11 +119,11 @@ export default function FrameRiskPredictor({ connection, active, onNext }: Props
           <>
             <h1
               className="font-display font-bold leading-tight mb-1"
-              style={{ fontSize: 27, color: '#1B2A41' }}
+              style={{ fontSize: 27, color: '#1B6FC2' }}
             >
-              Nothing to <span style={{ color: '#2ECC87' }}>connect to.</span>
+              Nothing to <span style={{ color: '#2F8FE0' }}>connect to.</span>
             </h1>
-            <p className="font-body text-sm mb-5" style={{ color: '#5B6B84' }}>
+            <p className="font-body text-sm mb-5" style={{ color: '#1B6FC2' }}>
               This itinerary has a single leg, or the connecting flight was already cancelled.
             </p>
           </>
@@ -129,7 +131,11 @@ export default function FrameRiskPredictor({ connection, active, onNext }: Props
       </div>
 
       <div className="mt-6">
-        <PrimaryButton onClick={onNext} icon="→" variant={severe ? 'coral' : 'leaf'}>
+        <PrimaryButton
+          onClick={onNext}
+          icon="→"
+          variant={connection ? (severe ? 'coral' : 'leaf') : 'sky'}
+        >
           {connection ? 'Show me a safer option' : 'Continue'}
         </PrimaryButton>
       </div>

@@ -5,20 +5,35 @@ import FrameRerouting from './components/FrameRerouting'
 import PassengerSearch from './components/PassengerSearch'
 import {
   fetchQueue, refreshQueue, fetchPassengerDetail, fetchLiveTrack,
-  fetchSystemStatus, fetchFlights,
+  fetchSystemStatus, fetchFlights, confirmReroute, fetchReroutedPassengers,
+  undoReroute, refreshFlightDatabase,
 } from './api'
-import type { FlightRecord, PassengerDetail, QueueRow, SystemStatus } from './types'
+import type {
+  FlightRecord, PassengerDetail, QueueRow, ReroutedPassenger, RerouteOption, SystemStatus,
+} from './types'
 
 type FlightSortKey = keyof Pick<FlightRecord, 'flight_no' | 'origin' | 'destination' | 'sched_dep' | 'status' | 'delay_minutes'>
-type View = 'queue' | 'flights' | 'sources' | 'passenger-search'
+type View = 'queue' | 'rerouted' | 'flights' | 'sources' | 'passenger-search'
 type DetailTab = 'disruption' | 'risk' | 'reroute'
 
 const NAV_ITEMS: Array<{ icon: string; label: string; view: View }> = [
   { icon: '🔗', label: 'Connection Queue', view: 'queue' },
+  { icon: '✅', label: 'Rerouted Passengers', view: 'rerouted' },
   { icon: '✈️', label: 'Flights', view: 'flights' },
   { icon: '📡', label: 'Data Sources', view: 'sources' },
   { icon: '＋', label: 'New Passenger', view: 'passenger-search' },
 ]
+
+/** Rows per page in the Flights table. */
+const FLIGHTS_PER_PAGE = 25
+
+/** Turn the backend's free-text `source` into a short, accurate badge. */
+function sourceBadge(source: string): { label: string; color: string; bg: string } {
+  if (source.includes('live')) return { label: 'Live', color: '#1A9B65', bg: '#DBF7EA' }
+  if (source.includes('local flight DB')) return { label: 'Local DB', color: '#1B6FC2', bg: '#E8F2FC' }
+  if (source.includes('cached')) return { label: 'Cached', color: '#D4870A', bg: '#FFF1DA' }
+  return { label: 'Mock', color: '#8A9BB5', bg: '#F1F5FB' }
+}
 
 const STATUS_LABEL: Record<string, { label: string; bg: string; color: string }> = {
   DELAYED: { label: '⚠ Delayed', bg: '#FFE3DB', color: '#FF6B4A' },
@@ -60,6 +75,14 @@ export default function App() {
   const [disruptedOnly, setDisruptedOnly] = useState(false)
   const [sortKey, setSortKey] = useState<FlightSortKey>('sched_dep')
   const [sortDir, setSortDir] = useState<1 | -1>(1)
+  const [flightQuery, setFlightQuery] = useState('')
+  const [flightPage, setFlightPage] = useState(1)
+  const [flightsReloading, setFlightsReloading] = useState(false)
+  const [flightsNotice, setFlightsNotice] = useState<string | null>(null)
+
+  const [rerouted, setRerouted] = useState<ReroutedPassenger[]>([])
+  const [reroutedError, setReroutedError] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
 
   // Load the connection-risk queue once, on mount.
   useEffect(() => {
@@ -109,6 +132,81 @@ export default function App() {
         setDetailLoading(false)
       })
   }, [])
+
+  const closeDetail = useCallback(() => {
+    setSelectedId(null)
+    setDetail(null)
+    setDetailError(null)
+  }, [])
+
+  // Escape closes the passenger dialog. A modal that can only be dismissed by
+  // hitting a specific ✕ is a trap for anyone working through a queue quickly.
+  useEffect(() => {
+    if (!selectedId) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeDetail() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [selectedId, closeDetail])
+
+  const loadRerouted = useCallback(() => {
+    fetchReroutedPassengers()
+      .then(rows => { setRerouted(rows); setReroutedError(null) })
+      .catch(err => setReroutedError(String(err)))
+  }, [])
+
+  useEffect(() => { loadRerouted() }, [loadRerouted])
+
+  // Confirming a reroute is the moment a passenger stops being the desk's
+  // problem: they leave the risk queue and appear under Rerouted Passengers.
+  const handleConfirmReroute = useCallback(async (option: RerouteOption) => {
+    if (!detail || !selectedId || selectedId.startsWith('LIVE:')) return
+    setConfirming(true)
+    try {
+      await confirmReroute(detail.passenger_id, option)
+      const [rows] = await Promise.all([fetchQueue()])
+      setQueue(rows)
+      loadRerouted()
+      setSelectedId(null)
+      setDetail(null)
+      setView('rerouted')
+    } catch (err) {
+      setDetailError(String(err))
+    } finally {
+      setConfirming(false)
+    }
+  }, [detail, selectedId, loadRerouted])
+
+  const handleUndoReroute = useCallback(async (passengerId: string) => {
+    try {
+      await undoReroute(passengerId)
+      loadRerouted()
+      setQueue(await fetchQueue())
+    } catch (err) {
+      setReroutedError(String(err))
+    }
+  }, [loadRerouted])
+
+  // Pulls the newest flights into the local database. Costs API quota, so it is
+  // deliberately a button rather than anything that fires on page load.
+  const handleReloadFlights = useCallback(async () => {
+    setFlightsReloading(true)
+    setFlightsNotice(null)
+    setFlightsError(null)
+    try {
+      const result = await refreshFlightDatabase(3)
+      setFlights(await fetchFlights({ disrupted: disruptedOnly }))
+      setFlightPage(1)
+      setFlightsNotice(
+        result.error
+          ? `${result.error} (${result.added} new, ${result.updated} updated)`
+          : `Added ${result.added} new flight${result.added === 1 ? '' : 's'}, refreshed ${result.updated}. Database now holds ${result.total}.`,
+      )
+    } catch (err) {
+      setFlightsError(String(err))
+    } finally {
+      setFlightsReloading(false)
+    }
+  }, [disruptedOnly])
 
   const trackLiveFlight = useCallback((flightIata: string) => {
     setSelectedId(`LIVE:${flightIata}`)
@@ -184,12 +282,35 @@ export default function App() {
     })
   }, [])
 
-  const sortedFlights = [...flights].sort((a, b) => {
+  // Search runs over the rows already loaded, so it is instant and needs no API
+  // call. Matches flight number, airline and either airport code, which is how
+  // someone actually looks for a flight ("BA", "LHR", "NH463").
+  const query = flightQuery.trim().toLowerCase()
+  const filteredFlights = query
+    ? flights.filter(f =>
+        f.flight_no.toLowerCase().includes(query) ||
+        f.airline.toLowerCase().includes(query) ||
+        f.origin.toLowerCase().includes(query) ||
+        f.destination.toLowerCase().includes(query) ||
+        `${f.origin}-${f.destination}`.toLowerCase().includes(query),
+      )
+    : flights
+
+  const sortedFlights = [...filteredFlights].sort((a, b) => {
     const av = a[sortKey]
     const bv = b[sortKey]
     const cmp = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv))
     return cmp * sortDir
   })
+
+  const flightPageCount = Math.max(1, Math.ceil(sortedFlights.length / FLIGHTS_PER_PAGE))
+  // Clamp rather than reset: re-sorting or narrowing a search should not throw
+  // the reader back to page 1 unless the page they were on no longer exists.
+  const currentFlightPage = Math.min(flightPage, flightPageCount)
+  const pagedFlights = sortedFlights.slice(
+    (currentFlightPage - 1) * FLIGHTS_PER_PAGE,
+    currentFlightPage * FLIGHTS_PER_PAGE,
+  )
 
   const criticalCount = queue.filter(r => r.risk_level === 'CRITICAL').length
   const today = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -224,7 +345,7 @@ export default function App() {
               }}
             >✈️</div>
             <div>
-              <div className="font-display font-bold" style={{ fontSize: 16, color: '#1B2A41', lineHeight: 1.1 }}>GateWatch</div>
+              <div className="font-display font-bold" style={{ fontSize: 16, color: '#1B2A41', lineHeight: 1.1 }}>ADAPT</div>
               <div className="font-mono" style={{ fontSize: 9, color: '#5B6B84', letterSpacing: '0.08em', textTransform: 'uppercase' }}>Ops Desk</div>
             </div>
           </div>
@@ -407,79 +528,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Detail panel - tabbed so only one section is visible at a time */}
-        {selectedId && (
-          <div className="flex flex-col gap-4">
-            {detailLoading || !detail ? (
-              <div
-                style={{
-                  background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(47,143,224,0.10)',
-                  borderRadius: 20, padding: '24px', textAlign: 'center',
-                }}
-              >
-                {detailError ? (
-                  <p className="font-body" style={{ color: '#B23434', fontSize: 13 }}>{detailError}</p>
-                ) : (
-                  <p className="font-body" style={{ color: '#5B6B84', fontSize: 13 }}>Loading passenger detail…</p>
-                )}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between">
-                  <h2 className="font-display font-bold" style={{ fontSize: 18, color: '#1B2A41' }}>
-                    {detail.name} <span className="font-mono" style={{ fontSize: 12, color: '#8A9BB5', fontWeight: 400 }}>({detail.passenger_id})</span>
-                  </h2>
-                  <button
-                    onClick={() => { setSelectedId(null); setDetail(null) }}
-                    className="font-body"
-                    style={{ fontSize: 12, color: '#5B6B84', background: 'none', border: 'none', cursor: 'pointer' }}
-                  >
-                    ✕ Close
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  {([
-                    ['disruption', 'Disruption'],
-                    ['risk', 'Connection Risk'],
-                    ['reroute', 'Rerouting'],
-                  ] as [DetailTab, string][]).map(([tab, label]) => (
-                    <button
-                      key={tab}
-                      onClick={() => setDetailTab(tab)}
-                      className="font-body font-semibold"
-                      style={{
-                        fontSize: 12, padding: '7px 16px', borderRadius: 999, cursor: 'pointer',
-                        border: detailTab === tab ? '1px solid rgba(47,143,224,0.30)' : '1px solid rgba(47,143,224,0.10)',
-                        color: detailTab === tab ? '#1B6FC2' : '#5B6B84',
-                        background: detailTab === tab ? 'rgba(47,143,224,0.10)' : 'rgba(255,255,255,0.7)',
-                      }}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <div
-                  style={{
-                    background: '#ffffff', borderRadius: 24,
-                    boxShadow: '0 12px 40px rgba(47,143,224,0.10)', overflow: 'hidden',
-                  }}
-                >
-                  {detailTab === 'disruption' && (
-                    <FrameDisruption disruption={detail.disruption} onNext={() => setDetailTab('risk')} />
-                  )}
-                  {detailTab === 'risk' && (
-                    <FrameRiskPredictor connection={detail.connection} active onNext={() => setDetailTab('reroute')} />
-                  )}
-                  {detailTab === 'reroute' && (
-                    <FrameRerouting reroute={detail.reroute} active onNext={() => setDetailTab('disruption')} />
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        )}
       </>
       )}
 
@@ -590,6 +638,124 @@ export default function App() {
         </div>
       )}
 
+      {view === 'rerouted' && (
+        <div
+          style={{
+            background: 'rgba(255,255,255,0.7)', border: '1px solid rgba(47,143,224,0.10)',
+            borderRadius: 20, padding: '18px 22px',
+          }}
+        >
+          <div className="mb-3">
+            <h3 className="font-display font-bold" style={{ fontSize: 16, color: '#1B2A41' }}>Rerouted Passengers</h3>
+            <p className="font-body" style={{ fontSize: 12, color: '#5B6B84' }}>
+              {rerouted.length} passenger{rerouted.length === 1 ? '' : 's'} rebooked and out of the risk queue
+              {' · '}shows what the reroute prevented
+            </p>
+          </div>
+
+          {reroutedError && (
+            <p className="font-body" style={{ fontSize: 12, color: '#FF6B4A', marginBottom: 8 }}>{reroutedError}</p>
+          )}
+
+          <div style={{ overflowX: 'auto' }}>
+            <table className="w-full" style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '1px solid rgba(47,143,224,0.12)' }}>
+                  {['Passenger', 'Was at risk', 'Rebooked onto', 'Arrives', 'Handled', ''].map(h => (
+                    <th
+                      key={h}
+                      className="font-mono"
+                      style={{
+                        textAlign: 'left', fontSize: 10, color: '#8A9BB5', textTransform: 'uppercase',
+                        letterSpacing: '0.06em', padding: '0 12px 10px', fontWeight: 600, whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rerouted.length ? (
+                  rerouted.map(r => {
+                    const risk = RISK_LABEL[r.original_risk ?? 'LOW'] ?? RISK_LABEL.LOW
+                    const mins = Math.round(r.rerouted_age_seconds / 60)
+                    return (
+                      <tr
+                        key={r.passenger_id}
+                        className="hover:bg-[rgba(47,143,224,0.05)]"
+                        style={{ borderBottom: '1px solid rgba(47,143,224,0.06)', transition: 'background 0.12s' }}
+                      >
+                        <td style={{ padding: '10px 12px' }}>
+                          <div className="font-body font-semibold" style={{ fontSize: 13, color: '#1B2A41' }}>{r.name}</div>
+                          <div className="font-mono" style={{ fontSize: 10, color: '#8A9BB5' }}>{r.passenger_id}</div>
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          {r.original_risk ? (
+                            <span
+                              className="font-mono font-bold"
+                              style={{
+                                fontSize: 10, letterSpacing: '0.04em', textTransform: 'uppercase',
+                                padding: '3px 9px', borderRadius: 999, color: risk.color, background: risk.bg,
+                              }}
+                            >
+                              {r.original_risk} · {r.original_risk_pct}%
+                            </span>
+                          ) : (
+                            <span className="font-mono" style={{ fontSize: 11, color: '#8A9BB5' }}>—</span>
+                          )}
+                          {r.connection_airport && (
+                            <div className="font-mono" style={{ fontSize: 10, color: '#8A9BB5', marginTop: 3 }}>at {r.connection_airport}</div>
+                          )}
+                        </td>
+                        <td className="font-mono" style={{ fontSize: 12, color: '#5B6B84', padding: '10px 12px' }}>
+                          {r.option_code ?? '—'}
+                          <div style={{ fontSize: 10, color: '#8A9BB5' }}>
+                            {r.option_route}
+                            {r.connections != null && ` · ${r.connections === 0 ? 'direct' : `${r.connections} stop`}`}
+                          </div>
+                        </td>
+                        <td className="font-mono" style={{ fontSize: 12, color: '#5B6B84', padding: '10px 12px' }}>
+                          {r.option_arrives ?? '—'}
+                          {r.delay_vs_original != null && (
+                            <div style={{ fontSize: 10, color: r.delay_vs_original > 0 ? '#D4870A' : '#1A9B65' }}>
+                              {r.delay_vs_original >= 0 ? '+' : ''}{r.delay_vs_original}m vs plan
+                            </div>
+                          )}
+                        </td>
+                        <td className="font-mono" style={{ fontSize: 11, color: '#8A9BB5', padding: '10px 12px', whiteSpace: 'nowrap' }}>
+                          {mins < 1 ? 'just now' : mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`}
+                        </td>
+                        <td style={{ padding: '10px 12px' }}>
+                          <button
+                            onClick={() => handleUndoReroute(r.passenger_id)}
+                            title="Put this passenger back in the risk queue"
+                            className="font-body"
+                            style={{
+                              fontSize: 11, color: '#5B6B84', background: 'rgba(255,255,255,0.8)',
+                              border: '1px solid rgba(47,143,224,0.18)', borderRadius: 999,
+                              padding: '4px 12px', cursor: 'pointer', whiteSpace: 'nowrap',
+                            }}
+                          >
+                            ↩ Undo
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })
+                ) : (
+                  <tr>
+                    <td colSpan={6} className="font-body" style={{ fontSize: 12, color: '#8A9BB5', padding: '20px 12px', textAlign: 'center' }}>
+                      Nobody rebooked yet. Confirm a reroute from a passenger in the Connection Queue and they will appear here.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {view === 'passenger-search' && <PassengerSearch />}
 
       {view === 'flights' && (
@@ -606,25 +772,58 @@ export default function App() {
                   from a hardcoded string - the source can be the local harvested
                   DB, the live API, a cached response, or mock data. */}
               <p className="font-body" style={{ fontSize: 12, color: '#5B6B84' }}>
-                {flights.length} flight{flights.length === 1 ? '' : 's'}
+                {query || disruptedOnly
+                  ? `${sortedFlights.length} of ${flights.length} flights`
+                  : `${flights.length} flight${flights.length === 1 ? '' : 's'}`}
                 {flights[0]?.source ? ` · ${flights[0].source}` : ''}
                 {' · '}click a column to sort
               </p>
             </div>
-            <button
-              onClick={() => setDisruptedOnly(v => !v)}
-              className="font-body font-semibold"
-              style={{
-                fontSize: 12, borderRadius: 999, padding: '6px 14px', cursor: 'pointer',
-                color: disruptedOnly ? '#C2410C' : '#5B6B84',
-                background: disruptedOnly ? 'rgba(255,107,74,0.12)' : 'rgba(255,255,255,0.7)',
-                border: disruptedOnly ? '1px solid rgba(255,107,74,0.35)' : '1px solid rgba(47,143,224,0.18)',
-              }}
-            >
-              {disruptedOnly ? '● Disrupted only' : '○ Disrupted only'}
-            </button>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <input
+                value={flightQuery}
+                onChange={e => { setFlightQuery(e.target.value); setFlightPage(1) }}
+                placeholder="Search flight, airline or airport…"
+                className="font-body"
+                style={{
+                  fontSize: 12, borderRadius: 999, padding: '6px 14px', width: 230,
+                  border: '1px solid rgba(47,143,224,0.18)', background: 'rgba(255,255,255,0.85)',
+                  color: '#1B2A41', outline: 'none',
+                }}
+              />
+              <button
+                onClick={() => { setDisruptedOnly(v => !v); setFlightPage(1) }}
+                className="font-body font-semibold"
+                style={{
+                  fontSize: 12, borderRadius: 999, padding: '6px 14px', cursor: 'pointer',
+                  color: disruptedOnly ? '#C2410C' : '#5B6B84',
+                  background: disruptedOnly ? 'rgba(255,107,74,0.12)' : 'rgba(255,255,255,0.7)',
+                  border: disruptedOnly ? '1px solid rgba(255,107,74,0.35)' : '1px solid rgba(47,143,224,0.18)',
+                }}
+              >
+                {disruptedOnly ? '● Disrupted only' : '○ Disrupted only'}
+              </button>
+              <button
+                onClick={handleReloadFlights}
+                disabled={flightsReloading}
+                title="Fetch the newest flights into the local database (uses API quota)"
+                className="font-body font-semibold"
+                style={{
+                  fontSize: 12, color: '#1B6FC2', background: 'rgba(47,143,224,0.10)',
+                  border: '1px solid rgba(47,143,224,0.18)', borderRadius: 999,
+                  padding: '6px 14px', cursor: flightsReloading ? 'default' : 'pointer',
+                  opacity: flightsReloading ? 0.6 : 1, whiteSpace: 'nowrap',
+                }}
+              >
+                {flightsReloading ? 'Loading…' : '⟳ Reload latest'}
+              </button>
+            </div>
           </div>
 
+          {flightsNotice && (
+            <p className="font-body" style={{ fontSize: 12, color: '#1B6FC2', marginBottom: 8 }}>{flightsNotice}</p>
+          )}
           {flightsError && (
             <p className="font-body" style={{ fontSize: 12, color: '#FF6B4A', marginBottom: 8 }}>{flightsError}</p>
           )}
@@ -663,8 +862,8 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {sortedFlights.length ? (
-                  sortedFlights.map(f => (
+                {pagedFlights.length ? (
+                  pagedFlights.map(f => (
                     // Real flight numbers aren't unique (codeshares, different real
                     // flights reusing a number) - keying on flight_no alone caused
                     // React to misattribute rows on sort. This composite key is
@@ -696,33 +895,221 @@ export default function App() {
                       </td>
                       <td className="font-mono" style={{ fontSize: 12, color: '#5B6B84', padding: '9px 12px' }}>{f.gate || '–'}</td>
                       <td style={{ padding: '9px 12px' }}>
-                        <span
-                          className="font-mono"
-                          style={{
-                            fontSize: 9, letterSpacing: '0.04em', textTransform: 'uppercase',
-                            padding: '2px 8px', borderRadius: 999,
-                            color: f.source.includes('live') ? '#1A9B65' : '#8A9BB5',
-                            background: f.source.includes('live') ? '#DBF7EA' : '#F1F5FB',
-                          }}
-                        >
-                          {f.source.includes('live') ? 'Live' : 'Mock'}
-                        </span>
+                        {(() => {
+                          // Harvested rows are real flights, so a plain live/mock
+                          // split labelled them "Mock" - the same mislabelling the
+                          // page header used to have. Name the actual source.
+                          const badge = sourceBadge(f.source)
+                          return (
+                            <span
+                              className="font-mono"
+                              style={{
+                                fontSize: 9, letterSpacing: '0.04em', textTransform: 'uppercase',
+                                padding: '2px 8px', borderRadius: 999,
+                                color: badge.color, background: badge.bg,
+                              }}
+                              title={f.source}
+                            >
+                              {badge.label}
+                            </span>
+                          )
+                        })()}
                       </td>
                     </tr>
                   ))
                 ) : (
                   <tr>
                     <td colSpan={8} className="font-body" style={{ fontSize: 12, color: '#8A9BB5', padding: '16px 12px', textAlign: 'center' }}>
-                      {flightsError ? 'Could not load flights.' : 'Loading flights…'}
+                      {flightsError
+                        ? 'Could not load flights.'
+                        : query
+                          ? `No flights match “${flightQuery}”.`
+                          : disruptedOnly
+                            ? 'No disrupted flights in the database right now.'
+                            : 'Loading flights…'}
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
           </div>
+
+          {/* Pager. Hidden on a single page so a short list isn't cluttered by
+              controls that cannot do anything. */}
+          {flightPageCount > 1 && (
+            <div className="flex items-center justify-between gap-3 flex-wrap" style={{ marginTop: 14 }}>
+              <p className="font-mono" style={{ fontSize: 11, color: '#8A9BB5' }}>
+                Showing {(currentFlightPage - 1) * FLIGHTS_PER_PAGE + 1}–
+                {Math.min(currentFlightPage * FLIGHTS_PER_PAGE, sortedFlights.length)} of {sortedFlights.length}
+              </p>
+
+              <div className="flex items-center gap-1 flex-wrap">
+                <button
+                  onClick={() => setFlightPage(p => Math.max(1, p - 1))}
+                  disabled={currentFlightPage === 1}
+                  className="font-body"
+                  style={{
+                    fontSize: 12, borderRadius: 8, padding: '5px 11px',
+                    border: '1px solid rgba(47,143,224,0.18)', background: 'rgba(255,255,255,0.8)',
+                    color: '#5B6B84', cursor: currentFlightPage === 1 ? 'default' : 'pointer',
+                    opacity: currentFlightPage === 1 ? 0.4 : 1,
+                  }}
+                >
+                  ‹ Prev
+                </button>
+
+                {/* A window around the current page, so 400 flights doesn't render
+                    16 page buttons across the screen. */}
+                {Array.from({ length: flightPageCount }, (_, i) => i + 1)
+                  .filter(p => p === 1 || p === flightPageCount || Math.abs(p - currentFlightPage) <= 1)
+                  .map((p, idx, arr) => (
+                    <span key={p} className="flex items-center gap-1">
+                      {idx > 0 && arr[idx - 1] !== p - 1 && (
+                        <span className="font-mono" style={{ fontSize: 11, color: '#8A9BB5', padding: '0 2px' }}>…</span>
+                      )}
+                      <button
+                        onClick={() => setFlightPage(p)}
+                        className="font-body font-semibold"
+                        style={{
+                          fontSize: 12, borderRadius: 8, padding: '5px 11px', cursor: 'pointer',
+                          minWidth: 34,
+                          border: p === currentFlightPage ? '1px solid rgba(47,143,224,0.40)' : '1px solid rgba(47,143,224,0.14)',
+                          background: p === currentFlightPage ? 'rgba(47,143,224,0.12)' : 'rgba(255,255,255,0.8)',
+                          color: p === currentFlightPage ? '#1B6FC2' : '#5B6B84',
+                        }}
+                      >
+                        {p}
+                      </button>
+                    </span>
+                  ))}
+
+                <button
+                  onClick={() => setFlightPage(p => Math.min(flightPageCount, p + 1))}
+                  disabled={currentFlightPage === flightPageCount}
+                  className="font-body"
+                  style={{
+                    fontSize: 12, borderRadius: 8, padding: '5px 11px',
+                    border: '1px solid rgba(47,143,224,0.18)', background: 'rgba(255,255,255,0.8)',
+                    color: '#5B6B84', cursor: currentFlightPage === flightPageCount ? 'default' : 'pointer',
+                    opacity: currentFlightPage === flightPageCount ? 0.4 : 1,
+                  }}
+                >
+                  Next ›
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
       </main>
+
+      {/* Passenger detail dialog. Lives outside <main> so the backdrop covers the
+          whole app: the desk is looking at one passenger, not skimming the queue
+          behind them. */}
+      {selectedId && (
+        <div
+          onClick={closeDetail}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 50,
+            background: 'rgba(27,42,65,0.45)', backdropFilter: 'blur(3px)',
+            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+            padding: '40px 20px', overflowY: 'auto',
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Passenger detail"
+            onClick={e => e.stopPropagation()}
+            className="animate-slide-up"
+            style={{
+              width: '100%', maxWidth: 680, background: 'rgba(247,251,255,0.98)',
+              borderRadius: 24, boxShadow: '0 24px 70px rgba(27,42,65,0.28)',
+              padding: '20px 22px 24px', display: 'flex', flexDirection: 'column', gap: 16,
+            }}
+          >
+            {detailLoading || !detail ? (
+              <div style={{ padding: '28px 8px', textAlign: 'center' }}>
+                {detailError ? (
+                  <p className="font-body" style={{ color: '#B23434', fontSize: 13 }}>{detailError}</p>
+                ) : (
+                  <p className="font-body" style={{ color: '#5B6B84', fontSize: 13 }}>Loading passenger detail…</p>
+                )}
+                <button
+                  onClick={closeDetail}
+                  className="font-body"
+                  style={{ marginTop: 14, fontSize: 12, color: '#1B6FC2', background: 'rgba(47,143,224,0.10)', border: '1px solid rgba(47,143,224,0.18)', borderRadius: 999, padding: '6px 16px', cursor: 'pointer' }}
+                >
+                  Close
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between">
+                  <h2 className="font-display font-bold" style={{ fontSize: 18, color: '#1B2A41' }}>
+                    {detail.name} <span className="font-mono" style={{ fontSize: 12, color: '#8A9BB5', fontWeight: 400 }}>({detail.passenger_id})</span>
+                  </h2>
+                  <button
+                    onClick={closeDetail}
+                    aria-label="Close passenger detail"
+                    className="font-body"
+                    style={{ fontSize: 12, color: '#5B6B84', background: 'none', border: 'none', cursor: 'pointer' }}
+                  >
+                    ✕ Close
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {([
+                    ['disruption', 'Disruption'],
+                    ['risk', 'Connection Risk'],
+                    ['reroute', 'Rerouting'],
+                  ] as [DetailTab, string][]).map(([tab, label]) => (
+                    <button
+                      key={tab}
+                      onClick={() => setDetailTab(tab)}
+                      className="font-body font-semibold"
+                      style={{
+                        fontSize: 12, padding: '7px 16px', borderRadius: 999, cursor: 'pointer',
+                        border: detailTab === tab ? '1px solid rgba(47,143,224,0.30)' : '1px solid rgba(47,143,224,0.10)',
+                        color: detailTab === tab ? '#1B6FC2' : '#5B6B84',
+                        background: detailTab === tab ? 'rgba(47,143,224,0.10)' : 'rgba(255,255,255,0.7)',
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <div
+                  style={{
+                    background: '#ffffff', borderRadius: 24,
+                    boxShadow: '0 12px 40px rgba(47,143,224,0.10)', overflow: 'hidden',
+                  }}
+                >
+                  {detailTab === 'disruption' && (
+                    <FrameDisruption disruption={detail.disruption} onNext={() => setDetailTab('risk')} />
+                  )}
+                  {detailTab === 'risk' && (
+                    <FrameRiskPredictor connection={detail.connection} active onNext={() => setDetailTab('reroute')} />
+                  )}
+                  {detailTab === 'reroute' && (
+                    <FrameRerouting
+                      reroute={detail.reroute}
+                      active
+                      onNext={() => setDetailTab('disruption')}
+                      // Live flight lookups aren't queue passengers, so there is
+                      // nothing to move out of the queue for them.
+                      onConfirm={selectedId.startsWith('LIVE:') ? undefined : handleConfirmReroute}
+                      confirming={confirming}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

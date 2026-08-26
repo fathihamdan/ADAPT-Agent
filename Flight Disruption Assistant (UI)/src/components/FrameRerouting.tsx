@@ -2,16 +2,29 @@ import { useEffect, useState } from 'react'
 import { ChatBubble } from './ui/ChatBubble'
 import { PrimaryButton } from './ui/PrimaryButton'
 import { OptionCard } from './ui/OptionCard'
-import type { Reroute } from '../types'
+import type { Reroute, RerouteOption } from '../types'
 
 interface Props {
   reroute: Reroute | null
   active: boolean
   onNext: () => void
+  /** Book the chosen option: moves the passenger out of the queue. */
+  onConfirm?: (option: RerouteOption) => void
+  confirming?: boolean
 }
 
-export default function FrameRerouting({ reroute, active, onNext }: Props) {
+export default function FrameRerouting({ reroute, active, onNext, onConfirm, confirming = false }: Props) {
   const [visible, setVisible] = useState(false)
+  const [selectedIndex, setSelectedIndex] = useState(0)
+
+  // Default to whichever option the backend recommended, but let the desk
+  // override it - the ranking is advice, and the person confirming is the one
+  // who knows about the passenger's bag, visa or onward plans.
+  useEffect(() => {
+    if (!reroute) return
+    const recommended = reroute.options.findIndex(o => o.recommended)
+    setSelectedIndex(recommended >= 0 ? recommended : 0)
+  }, [reroute])
 
   // Three distinct outcomes, not two. The middle one - a search that ran and came
   // back empty - used to fall into the success branch and render "You're covered /
@@ -70,6 +83,8 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
                   delayVsOriginal={opt.delay_vs_original}
                   best={opt.recommended}
                   animationDelay={i * 0.1}
+                  selected={onConfirm ? i === selectedIndex : false}
+                  onSelect={onConfirm ? () => setSelectedIndex(i) : undefined}
                 />
               ))}
             </div>
@@ -121,11 +136,21 @@ export default function FrameRerouting({ reroute, active, onNext }: Props) {
 
       <div className="mt-6">
         <PrimaryButton
-          onClick={onNext}
+          onClick={() => {
+            const chosen = hasOptions && reroute ? reroute.options[selectedIndex] : undefined
+            if (onConfirm && chosen) onConfirm(chosen)
+            else onNext()
+          }}
           variant={searchedAndEmpty ? 'coral' : 'leaf'}
           icon={searchedAndEmpty ? '↩' : '✓'}
         >
-          {hasOptions ? 'Confirm my new flight' : 'Back to start'}
+          {!hasOptions
+            ? 'Back to start'
+            : confirming
+              ? 'Rebooking…'
+              : onConfirm
+                ? `Rebook onto ${reroute?.options[selectedIndex]?.code ?? 'this option'}`
+                : 'Confirm my new flight'}
         </PrimaryButton>
       </div>
     </div>

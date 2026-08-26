@@ -67,6 +67,50 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def save_detailed(flights: list[Flight]) -> tuple[int, int]:
+    """Store flights, returning (added, updated).
+
+    The (flight_no, sched_dep) primary key is what guarantees no duplicates: the
+    same flight re-harvested overwrites its own row rather than creating a second
+    one. Existing rows are still refreshed rather than skipped, because a flight
+    that has since gone from ON_TIME to CANCELLED is the single most valuable
+    thing a reload can tell an ops desk - but that is an update, not a duplicate.
+    """
+    if not flights:
+        return 0, 0
+    keys = {(f.flight_no, f.sched_dep.isoformat()) for f in flights}
+    existing = _existing_keys(keys)
+    added = len(keys - existing)
+    written = save(flights)
+    if not written:
+        return 0, 0
+    return added, len(keys) - added
+
+
+def _existing_keys(keys: set[tuple[str, str]]) -> set[tuple[str, str]]:
+    """Which (flight_no, sched_dep) pairs are already stored."""
+    if not keys or not _DB_PATH.exists():
+        return set()
+    found: set[tuple[str, str]] = set()
+    key_list = list(keys)
+    try:
+        with _connect() as conn:
+            # Chunked to stay well under SQLite's parameter limit on big harvests.
+            for start in range(0, len(key_list), 400):
+                chunk = key_list[start : start + 400]
+                placeholders = ", ".join("(?, ?)" * 1 for _ in chunk)
+                params = [value for pair in chunk for value in pair]
+                rows = conn.execute(
+                    f"SELECT flight_no, sched_dep FROM flights "
+                    f"WHERE (flight_no, sched_dep) IN ({placeholders})",
+                    params,
+                ).fetchall()
+                found.update((r[0], r[1]) for r in rows)
+    except sqlite3.Error:
+        return set()
+    return found
+
+
 def save(flights: list[Flight]) -> int:
     """Insert or update flights. Returns how many rows were written."""
     if not flights:

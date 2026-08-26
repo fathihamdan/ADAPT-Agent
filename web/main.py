@@ -1,4 +1,4 @@
-"""ADAPT-Agent web app: serves the GateWatch UI (the React app in
+"""ADAPT-Agent web app: serves the ADAPT UI (the React app in
 "Flight Disruption Assistant (UI)") and the API it calls.
 
 Endpoints wrap the same adapt/agents used by the CLI - no separate logic, just a
@@ -104,6 +104,50 @@ def api_refresh_queue() -> list[dict]:
     start (or the last refresh) - no automatic re-fetching on every request.
     """
     return service.refresh_queue()
+
+
+class RerouteConfirmation(BaseModel):
+    """The option the ops desk picked for this passenger."""
+
+    code: str
+    route: str = ""
+    depart: str = ""
+    arrival: str = ""
+    delay_vs_original: int = 0
+    connections: int = 0
+
+
+@app.post("/api/queue/{passenger_id}/reroute")
+def api_confirm_reroute(passenger_id: str, option: RerouteConfirmation) -> dict:
+    """Mark a passenger as rebooked: drops out of the queue, into Rerouted."""
+    result = service.confirm_reroute(passenger_id, option.model_dump())
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"No passenger found with ID '{passenger_id}'")
+    return result
+
+
+@app.get("/api/rerouted")
+def api_list_rerouted() -> list[dict]:
+    """Passengers the desk has already rebooked, most recent first."""
+    return service.list_rerouted_passengers()
+
+
+@app.delete("/api/rerouted/{passenger_id}")
+def api_undo_reroute(passenger_id: str) -> dict:
+    """Put a passenger back in the queue - the escape hatch for a misclick."""
+    if not service.undo_reroute(passenger_id):
+        raise HTTPException(status_code=404, detail=f"'{passenger_id}' is not marked as rerouted")
+    return {"passenger_id": passenger_id, "restored": True}
+
+
+@app.post("/api/flights/refresh")
+def api_refresh_flights(pages: int = 3) -> dict:
+    """Fetch the newest flights from AviationStack into the local database.
+
+    Costs `pages` API calls against a ~100-call monthly quota, so it is a button
+    the user presses rather than anything automatic.
+    """
+    return service.refresh_flight_database(pages=max(1, min(pages, 10)))
 
 
 @app.get("/api/queue/{passenger_id}")

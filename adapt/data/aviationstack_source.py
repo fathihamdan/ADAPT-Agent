@@ -278,6 +278,8 @@ def harvest(
     page_size = max(1, min(page_size, MAX_PAGE_SIZE))
     api_calls = 0
     stored = 0
+    added = 0
+    updated = 0
     seen: set[tuple[str, datetime]] = set()
     error: str | None = None
 
@@ -296,7 +298,10 @@ def harvest(
         fresh = [f for f in flights if (f.flight_no, f.sched_dep) not in seen]
         seen.update((f.flight_no, f.sched_dep) for f in fresh)
 
-        stored += flight_store.save(fresh)
+        page_added, page_updated = flight_store.save_detailed(fresh)
+        added += page_added
+        updated += page_updated
+        stored += page_added + page_updated
         if on_page:
             on_page(page + 1, len(fresh), stored)
 
@@ -307,6 +312,8 @@ def harvest(
         "pages": min(pages, api_calls),
         "api_calls": api_calls,
         "stored": stored,
+        "added": added,
+        "updated": updated,
         "total_in_db": flight_store.count(),
         "error": error,
     }

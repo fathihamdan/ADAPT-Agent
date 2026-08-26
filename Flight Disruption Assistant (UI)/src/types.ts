@@ -84,6 +84,34 @@ export interface Reroute {
   options: RerouteOption[]
 }
 
+export interface ReroutedPassenger {
+  passenger_id: string
+  name: string
+  /** What the risk was before the desk acted - what this reroute prevented. */
+  original_risk: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL' | null
+  original_risk_pct: number | null
+  connection_airport: string | null
+  option_code: string | null
+  option_route: string | null
+  option_departs: string | null
+  option_arrives: string | null
+  delay_vs_original: number | null
+  connections: number | null
+  rerouted_at: number
+  rerouted_age_seconds: number
+}
+
+export interface FlightRefreshResult {
+  ok: boolean
+  error: string | null
+  /** Flights that were not already in the database. */
+  added: number
+  /** Known flights whose status was refreshed - not duplicates. */
+  updated: number
+  api_calls?: number
+  total: number
+}
+
 export interface AirportInfo {
   code: string
   name: string
