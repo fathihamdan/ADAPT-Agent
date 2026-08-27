@@ -2,7 +2,7 @@
 ## Airline Disruption Analysis &amp; Prevention Technology  
 An Agentic AI-Powered system 
 
-Self-connect trips — flight A on one airline, flight B on a different one, sold as a single journey by a 3rd-party ticket dealer — are a liability nobody but the dealer is watching. Neither airline protects that connection if flight A runs late; they don't even know the other flight exists. ADAPT-Agent (Airline Disruption Analysis & Prevention Technology) is an agentic AI tool for that dealer's **ops desk**: it watches every customer's self-connect booking, explains what's going wrong in plain English, predicts the real probability of a missed connection, and finds a rerouting option before the customer ever reaches the gate.
+Self-connect trips — flight A on one airline, flight B on a different one, sold as a single journey by a 3rd-party ticket dealer. Neither airline protects that connection if flight A runs late; they don't even know the other flight exists. ADAPT-Agent (Airline Disruption Analysis & Prevention Technology) is an agentic AI tool for that dealer's **ops desk**: it watches every customer's self-connect booking, explains what's going wrong in plain English, predicts the real probability of a missed connection, and finds a rerouting option before the customer ever reaches the gate.
 
 ## How ADAPT Revolutionizes Disruption Ops:
 ADAPT offers an end-to-end autonomous disruption management experience through its intelligent features and automated actions:
